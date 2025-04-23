@@ -1,0 +1,27 @@
+name: p2p_messenger
+description: WebRTC P2P data transfer test
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=2.18.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_webrtc: ^0.12.0
+  web_socket_channel: ^3.0.1
+  socket_io_client: ^2.0.3+1
+  path_provider: ^2.1.5
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: '>=5.0.0'
+
+dependency_overrides:
+  webrtc_interface: ^1.2.0
+
+flutter:
+  uses-material-design: true
