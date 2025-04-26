@@ -9,12 +9,27 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_webrtc: ^0.12.0
-  web_socket_channel: ^3.0.1
-  socket_io_client: ^2.0.3+1
-  path_provider: ^2.1.5
-  permission_handler: ^11.3.1
-
+  # WebRTC для видео/аудио-чатов и P2P-соединений
+  flutter_webrtc: ^0.12.0  # Реализация WebRTC для Flutter (видеозвонки, передача данных)
+  # HTTP-клиент для REST API
+  http: ^1.2.2  # Работа с HTTP-запросами (GET/POST/PUT/DELETE)
+  # WebSocket-клиенты
+  web_socket_channel: ^3.0.1  # Низкоуровневый WebSocket (RFC 6455)
+  socket_io_client: ^2.0.3+1  # Клиент Socket.IO (реалтайм-события с бэкендом)
+  # Работа с файловой системой
+  path_provider: ^2.1.5  # Получение путей к директориям (кэш, документы и т.д.)
+  # Управление разрешениями
+  permission_handler: ^11.3.1  # Запрос разрешений (камера, микрофон, геолокация)
+  # Безопасное хранилище https://pub.dev/packages/flutter_secure_storage
+  flutter_secure_storage: ^9.2.2  # Шифрованное хранилище для токенов/ключей
+  # Криптография
+  pointycastle: ^3.9.1  # Криптографические алгоритмы (AES, RSA, хеширование)
+  # Генерация ID
+  uuid: ^4.5.0  # Генерация уникальных идентификаторов (UUID v4)
+  # Работа с JWT (JSON Web Token)
+  jwt_decoder: ^2.0.1  # Парсинг и валидация JWT-токенов
+  # Работа с выбором файлов
+  file_picker: ^10.1.2  # Работа с выбором файлов
 dev_dependencies:
   flutter_test:
     sdk: flutter

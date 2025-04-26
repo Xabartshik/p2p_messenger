@@ -1,368 +1,404 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
-import 'dart:convert';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:p2p_messenger/api/api.dart';
+import 'package:p2p_messenger/api/classes/auth_service.dart';
+import 'package:p2p_messenger/api/classes/encryption_service.dart';
+import 'package:p2p_messenger/api/classes/file_storage.dart';
+import 'package:p2p_messenger/api/classes/message_repository.dart';
+import 'package:p2p_messenger/api/classes/user_repository.dart';
+import 'package:p2p_messenger/api/classes/web_rtc_service.dart';
+import 'package:p2p_messenger/api/models/message.dart';
+import 'package:p2p_messenger/api/models/user.dart';
+import 'package:uuid/uuid.dart';
+import 'dart:io';
 
-// Основная функция приложения
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  // Игнорирование HTTPS-сертификатов для локальных тестов
-  HttpOverrides.global = MyHttpOverrides();
-  runApp(const MyApp());
+const String url_server = 'https://rnrpe-213-108-187-53.a.free.pinggy.link';
+
+extension StringExtension on String {
+  bool matches(Pattern pattern) => RegExp(pattern as String).hasMatch(this);
 }
 
-// Класс для обхода проверки HTTPS-сертификатов
-class MyHttpOverrides extends HttpOverrides {
-  @override
-  HttpClient createHttpClient(SecurityContext? context) {
-    return super.createHttpClient(context)
-      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
-  }
+void main() {
+  runApp(MyApp());
 }
 
-// Главный виджет приложения
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'WebRTC P2P Test',
+      title: 'WebRTC Messenger',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: const WebRTCPage(),
+      home: MessengerPage(),
     );
   }
 }
 
-// Виджет страницы с интерфейсом
-class WebRTCPage extends StatefulWidget {
-  const WebRTCPage({super.key});
-
+class MessengerPage extends StatefulWidget {
   @override
-  _WebRTCPageState createState() => _WebRTCPageState();
+  _MessengerPageState createState() => _MessengerPageState();
 }
 
-class _WebRTCPageState extends State<WebRTCPage> {
-  // Список для хранения сообщений статуса
-  final List<String> _statusMessages = [];
-  // Флаг для отслеживания состояния подключения
+class _MessengerPageState extends State<MessengerPage> {
+  final _messengerApi = MessengerAPI(
+    userRepository: UserRepository(url_server, EncryptionService()),
+    messageRepository: MessageRepository(),
+    fileStorage: FileStorage(),
+    webRTCService: WebRTCService(UserRepository(url_server, EncryptionService()), MessageRepository(), EncryptionService()),
+    authService: AuthService(url_server),
+  );
+  final List<String> _messages = [];
+  final _scrollController = ScrollController();
   bool _isConnecting = false;
-  // Контроллер для прокрутки списка сообщений
-  final ScrollController _scrollController = ScrollController();
-  // WebSocket-соединение
-  IO.Socket? _socket;
+  final _textController = TextEditingController();
+  final _emailController = TextEditingController(text: 'alice@example.com');
+  final _passwordController = TextEditingController(text: 'pass123');
+  final _usernameController = TextEditingController(text: 'Alice Red');
+  final _identifierController = TextEditingController(text: 'alice_red123');
+  String? _userId;
+  String? _currentIdentifier;
+  String? _recipientId;
 
-  @override
-  void initState() {
-    super.initState();
-    // Запрос разрешений при инициализации
-    _requestPermissions();
-  }
-
-  // Функция для добавления сообщения в список и консоль
-  void _addStatusMessage(String message) {
+  void _addMessage(String message, {VoidCallback? onSelectRecipient, String? foundUserId}) {
     setState(() {
-      _statusMessages.add(message);
+      _messages.add(message);
     });
-    print(message);
-    // Автоматическая прокрутка к последнему сообщению
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
+          duration: Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
       }
     });
-  }
-
-  // Функция для запроса разрешений
-  Future<void> _requestPermissions() async {
-    try {
-      await [
-        Permission.storage,
-        Permission.manageExternalStorage, // Для Android
-      ].request();
-      _addStatusMessage("Разрешения запрошены успешно");
-    } catch (e) {
-      _addStatusMessage("Ошибка при запросе разрешений: $e");
-    }
-  }
-
-  // Функция для запуска теста WebRTC
-  Future<void> _startP2PTest() async {
-    if (_isConnecting) {
-      _addStatusMessage("Подключение уже выполняется");
-      return;
-    }
-
-    setState(() {
-      _isConnecting = true;
-    });
-
-    try {
-      _addStatusMessage("Создание тестового файла...");
-      // Создание тестового файла
-      final tempDir = await getTemporaryDirectory();
-      final testFile = File('${tempDir.path}/test.txt');
-      await testFile.writeAsString("Привет, это тестовое сообщение!");
-      _addStatusMessage("Тестовый файл создан: ${testFile.path}");
-
-      // Установка идентификатора устройства
-      const peerId = "deviceA"; // Измените на "deviceB" на втором телефоне
-      const serverUrl = "http://192.168.0.101:5000"; // URL сервера для SocketIO
-      _addStatusMessage("Инициализация WebRTC для $peerId...");
-      // Инициализация WebRTC
-      await _initWebRTC(peerId, serverUrl, testFile);
-    } catch (e) {
-      _addStatusMessage("Ошибка в _startP2PTest: $e");
-    } finally {
+    if (onSelectRecipient != null && foundUserId != null) {
       setState(() {
-        _isConnecting = false;
+        _messages.add('Select as Recipient?');
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
       });
     }
   }
 
-  // Функция для настройки WebRTC
-  Future<void> _initWebRTC(String peerId, String serverUrl, File file) async {
+  Future<void> _registerUser() async {
+    setState(() { _isConnecting = true; });
     try {
-      // Конфигурация RTCPeerConnection
-      final configuration = {
-        'iceServers': [], // Пустой для локальной сети
-        'sdpSemantics': 'unified-plan'
-      };
-      final peerConnection = await createPeerConnection(configuration);
-      _addStatusMessage("RTCPeerConnection создан");
-
-      // Создание DataChannel
-      final dataChannelInit = RTCDataChannelInit()..binaryType = 'binary';
-      final dataChannel = await peerConnection.createDataChannel('file-transfer', dataChannelInit);
-      _addStatusMessage("DataChannel создан");
-
-      // Обработка сообщений DataChannel
-      dataChannel.onMessage = (RTCDataChannelMessage message) {
-        try {
-          if (message.isBinary) {
-            _addStatusMessage("Получено через WebRTC: ${utf8.decode(message.binary)}");
-          } else {
-            _addStatusMessage("Получено через WebRTC: ${message.text}");
-          }
-        } catch (e) {
-          _addStatusMessage("Ошибка в обработке сообщения DataChannel: $e");
-        }
-      };
-      dataChannel.onDataChannelState = (state) {
-        if (state == RTCDataChannelState.RTCDataChannelOpen) {
-          _addStatusMessage("DataChannel открыт");
-        }
-      };
-
-      // Подключение к SocketIO
-      try {
-        _socket = IO.io(serverUrl, <String, dynamic>{
-          'transports': ['websocket'],
-          'autoConnect': false,
-        });
-        _addStatusMessage("Инициализация SocketIO: $serverUrl");
-
-        // Обработка событий SocketIO
-        _socket!.onConnect((_) {
-          _addStatusMessage("Подключено к SocketIO");
-          // Регистрация устройства
-          _socket!.emit('message', {
-            'type': 'register',
-            'id': peerId
-          });
-          _addStatusMessage("Устройство зарегистрировано: $peerId");
-        });
-
-        _socket!.onConnectError((error) {
-          _addStatusMessage("Ошибка подключения SocketIO: $error");
-        });
-
-        _socket!.onError((error) {
-          _addStatusMessage("Ошибка SocketIO: $error");
-        });
-
-        _socket!.onDisconnect((_) {
-          _addStatusMessage("SocketIO отключён");
-        });
-
-        // Обработка сообщений от сервера
-        _socket!.on('message', (data) async {
-          try {
-            _addStatusMessage("Получено от сервера: $data");
-            if (data['type'] == 'offer') {
-              await peerConnection.setRemoteDescription(
-                RTCSessionDescription(data['sdp'], data['type']),
-              );
-              final answer = await peerConnection.createAnswer();
-              await peerConnection.setLocalDescription(answer);
-              _socket!.emit('message', {
-                'type': 'answer',
-                'sdp': answer.sdp,
-                'from': peerId,
-                'to': data['from']
-              });
-              _addStatusMessage("Отправлен SDP-answer");
-            } else if (data['type'] == 'answer') {
-              await peerConnection.setRemoteDescription(
-                RTCSessionDescription(data['sdp'], data['type']),
-              );
-              _addStatusMessage("SDP-answer установлен");
-            } else if (data['type'] == 'candidate') {
-              await peerConnection.addCandidate(
-                RTCIceCandidate(
-                  data['candidate'],
-                  data['sdpMid'],
-                  data['sdpMLineIndex'],
-                ),
-              );
-              _addStatusMessage("ICE-кандидат добавлен");
-            }
-          } catch (e) {
-            _addStatusMessage("Ошибка обработки сообщения сервера: $e");
-          }
-        });
-
-        // Подключение к серверу
-        _socket!.connect();
-      } catch (e) {
-        _addStatusMessage("Ошибка инициализации SocketIO: $e");
+      if (!_identifierController.text.matches(r'^[a-z0-9_]+$')) {
+        _addMessage('Invalid identifier: use only lowercase letters, numbers, and underscores');
         return;
       }
+      final keyPair = await _messengerApi.webRTCService.encryptionService.generateKeyPair();
+      final user = await _messengerApi.registerUser(
+        _usernameController.text,
+        _emailController.text,
+        _passwordController.text,
+        keyPair['publicKey']!,
+        _identifierController.text,
+      );
+      await FlutterSecureStorage().write(key: 'private_key_${user.userId}', value: keyPair['privateKey']);
+      setState(() {
+        _currentIdentifier = _identifierController.text;
+        _userId = user.userId;
+      });
+      _addMessage('Registered as ${user.username}, Identifier: ${user.identifier}');
+    } catch (e, stackTrace) {
+      print('Registration error: $e\nStackTrace: $stackTrace');
+      _addMessage('Registration error: $e');
+    } finally {
+      setState(() { _isConnecting = false; });
+    }
+  }
 
-      // Обработка ICE-кандидатов
-      peerConnection.onIceCandidate = (RTCIceCandidate candidate) {
-        try {
-          _socket!.emit('message', {
-            'type': 'candidate',
-            'candidate': candidate.candidate,
-            'sdpMid': candidate.sdpMid,
-            'sdpMLineIndex': candidate.sdpMLineIndex,
-            'from': peerId,
-            'to': peerId == "deviceA" ? "deviceB" : "deviceA"
-          });
-          _addStatusMessage("Отправлен ICE-кандидат");
-        } catch (e) {
-          _addStatusMessage("Ошибка отправки ICE-кандидата: $e");
+  Future<void> _startMessenger() async {
+    if (_isConnecting) return;
+    setState(() { _isConnecting = true; });
+    try {
+      final user = await _messengerApi.loginUser(_emailController.text, _passwordController.text);
+      setState(() {
+        _userId = user.userId;
+        _currentIdentifier = user.identifier;
+      });
+      _addMessage('Logged in as ${user.username}, User ID: ${user.userId}, Identifier: ${user.identifier}');
+
+      await _messengerApi.initializeConnection(user.userId, url_server);
+      _addMessage('WebRTC initialized');
+
+      _messengerApi.listenForMessages(user.userId).listen((msg) {
+        if (msg.type == MessageType.text) {
+          _addMessage('Received text: ${msg.textContent}');
+        } else if (msg.type == MessageType.file) {
+          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')}');
         }
-      };
+      });
+    } catch (e, stackTrace) {
+      print('Login error details: $e\nStackTrace: $stackTrace');
+      _addMessage('Error: $e');
+    } finally {
+      setState(() { _isConnecting = false; });
+    }
+  }
 
-      // Обработка входящего DataChannel
-      peerConnection.onDataChannel = (RTCDataChannel channel) {
-        channel.onMessage = (RTCDataChannelMessage message) {
-          try {
-            if (message.isBinary) {
-              _addStatusMessage("Получено через WebRTC: ${utf8.decode(message.binary)}");
-            } else {
-              _addStatusMessage("Получено через WebRTC: ${message.text}");
-            }
-          } catch (e) {
-            _addStatusMessage("Ошибка обработки входящего DataChannel: $e");
-          }
-        };
-        channel.onDataChannelState = (state) {
-          if (state == RTCDataChannelState.RTCDataChannelOpen) {
-            _addStatusMessage("DataChannel открыт (от удалённого устройства)");
-            if (peerId == "deviceB") {
-              file.readAsBytes().then((bytes) {
-                channel.send(RTCDataChannelMessage.fromBinary(bytes));
-                _addStatusMessage("Файл отправлен через WebRTC (ответчик)");
-              }).catchError((e) {
-                _addStatusMessage("Ошибка отправки файла (deviceB): $e");
-              });
-            }
-          }
-        };
-      };
-
-      // Инициирование соединения для deviceA
-      if (peerId == "deviceA") {
-        try {
-          await Future.delayed(const Duration(seconds: 2));
-          final offer = await peerConnection.createOffer();
-          await peerConnection.setLocalDescription(offer);
-          _socket!.emit('message', {
-            'type': 'offer',
-            'sdp': offer.sdp,
-            'from': peerId,
-            'to': "deviceB"
-          });
-          _addStatusMessage("Отправлен SDP-offer");
-
-          dataChannel.onDataChannelState = (state) async {
-            if (state == RTCDataChannelState.RTCDataChannelOpen) {
-              try {
-                final bytes = await file.readAsBytes();
-                await dataChannel.send(RTCDataChannelMessage.fromBinary(bytes));
-                _addStatusMessage("Файл отправлен через WebRTC (инициатор)");
-              } catch (e) {
-                _addStatusMessage("Ошибка отправки файла (deviceA): $e");
-              }
-            }
-          };
-        } catch (e) {
-          _addStatusMessage("Ошибка инициации соединения (deviceA): $e");
-        }
-      }
-
-      // Ожидание для теста
-      await Future.delayed(const Duration(seconds: 10));
-      // Закрытие соединений
+  Future<void> _updateUserId() async {
+    final newId = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Change User ID'),
+        content: TextField(
+          controller: TextEditingController(text: _userId),
+          onChanged: (value) => _userId = value,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, _userId),
+            child: Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (newId != null && newId.isNotEmpty) {
       try {
-        await peerConnection.close();
-        _socket?.disconnect();
-        _addStatusMessage("Соединения закрыты");
+        final user = await _messengerApi.userRepository.getUserById(_userId!);
+        if (user != null) {
+          await _messengerApi.userRepository.updateUser(
+            User(
+              userId: newId,
+              username: user.username,
+              email: user.email,
+              status: user.status,
+              publicKey: user.publicKey,
+              identifier: user.identifier,
+            ),
+          );
+          setState(() {
+            _userId = newId;
+          });
+          _addMessage('User ID updated to $newId');
+        }
       } catch (e) {
-        _addStatusMessage("Ошибка закрытия соединений: $e");
+        _addMessage('Error updating User ID: $e');
       }
-    } catch (e) {
-      _addStatusMessage("Ошибка в _initWebRTC: $e");
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    if (_recipientId == null) {
+      _addMessage('Error: Please select a recipient');
+      return;
+    }
+    if (_userId == null) {
+      _addMessage('Error: Please login first');
+      return;
+    }
+    try {
+      if (_textController.text.isNotEmpty) {
+        final message = Message(
+          messageId: Uuid().v4(),
+          senderId: _userId!,
+          recipientId: _recipientId!,
+          type: MessageType.text,
+          textContent: _textController.text,
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        );
+        await _messengerApi.sendMessage(_userId!, _recipientId!, message);
+        _addMessage('Sent text: ${_textController.text} to $_recipientId');
+        _textController.clear();
+      }
+    } catch (e, stackTrace) {
+      print('Send message error: $e\nStackTrace: $stackTrace');
+      _addMessage('Error sending message: $e');
+    }
+  }
+
+  Future<void> _attachFiles() async {
+    if (_recipientId == null) {
+      _addMessage('Error: Please select a recipient');
+      return;
+    }
+    if (_userId == null) {
+      _addMessage('Error: Please login first');
+      return;
+    }
+    try {
+      final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+      if (result != null) {
+        final attachments = await Future.wait(result.files.map((file) async {
+          final bytes = await File(file.path!).readAsBytes();
+          return FileAttachment(
+            fileId: Uuid().v4(),
+            fileName: file.name,
+            fileType: file.extension ?? 'document',
+            content: bytes,
+            size: bytes.length,
+          );
+        }));
+
+        final message = Message(
+          messageId: Uuid().v4(),
+          senderId: _userId!,
+          recipientId: _recipientId!,
+          type: MessageType.file,
+          attachments: attachments,
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        );
+        await _messengerApi.sendMessage(_userId!, _recipientId!, message);
+        _addMessage('Sent files: ${attachments.map((a) => a.fileName).join(', ')} to $_recipientId');
+      }
+    } catch (e, stackTrace) {
+      print('Attach files error: $e\nStackTrace: $stackTrace');
+      _addMessage('Error sending files: $e');
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('WebRTC P2P Test')),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ElevatedButton(
-              onPressed: _isConnecting ? null : _startP2PTest,
-              child: Text(_isConnecting ? 'Подключение...' : 'Подключиться'),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: Container(
+      appBar: AppBar(title: Text('WebRTC Messenger')),
+      body: SingleChildScrollView(
+        physics: AlwaysScrollableScrollPhysics(),
+        child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('User ID: ${_userId ?? "Not logged in"}'),
+              ElevatedButton(
+                onPressed: _isConnecting ? null : _updateUserId,
+                child: Text('Change User ID'),
+              ),
+              Text('Current Identifier: ${_currentIdentifier ?? "Not logged in"}'),
+              Text('Current Recipient ID: ${_recipientId ?? "None selected"}'),
+              TextField(
+                controller: TextEditingController(),
+                decoration: InputDecoration(
+                  labelText: 'Search by Identifier',
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: (value) async {
+                  if (value.matches(r'^[a-z0-9_]+$')) {
+                    try {
+                      final user = await _messengerApi.userRepository.getUserByIdentifier(value);
+                      if (user != null) {
+                        _addMessage(
+                          'Found user: ${user.username} (${user.identifier}, ID: ${user.userId})',
+                          onSelectRecipient: () {
+                            setState(() {
+                              _recipientId = user.userId;
+                            });
+                            _addMessage('Selected recipient: ${user.username} (ID: ${user.userId})');
+                          },
+                          foundUserId: user.userId,
+                        );
+                      } else {
+                        _addMessage('User with identifier $value not found');
+                      }
+                    } catch (e) {
+                      _addMessage('Error searching user: $e');
+                    }
+                  } else {
+                    _addMessage('Invalid identifier: use only lowercase letters, numbers, and underscores');
+                  }
+                },
+              ),
+              SizedBox(height: 16),
+              TextField(
+                controller: _usernameController,
+                decoration: InputDecoration(labelText: 'Display Name'),
+              ),
+              TextField(
+                controller: _identifierController,
+                decoration: InputDecoration(labelText: 'Identifier'),
+              ),
+              TextField(
+                controller: _emailController,
+                decoration: InputDecoration(labelText: 'Email'),
+              ),
+              TextField(
+                controller: _passwordController,
+                decoration: InputDecoration(labelText: 'Password'),
+                obscureText: true,
+              ),
+              SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: _isConnecting ? null : _registerUser,
+                child: Text(_isConnecting ? 'Registering...' : 'Register'),
+              ),
+              ElevatedButton(
+                onPressed: _isConnecting ? null : _startMessenger,
+                child: Text(_isConnecting ? 'Connecting...' : 'Login & Start Messenger'),
+              ),
+              SizedBox(height: 16),
+              Container(
+                height: 300,
                 decoration: BoxDecoration(
                   border: Border.all(color: Colors.grey),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: ListView.builder(
                   controller: _scrollController,
-                  padding: const EdgeInsets.all(8),
-                  itemCount: _statusMessages.length,
+                  padding: EdgeInsets.all(8),
+                  itemCount: _messages.length,
                   itemBuilder: (context, index) {
+                    if (_messages[index].startsWith('Select as Recipient?') && index > 0) {
+                      return Padding(
+                        padding: EdgeInsets.symmetric(vertical: 4),
+                        child: ElevatedButton(
+                          onPressed: () {
+                            final prevMessage = _messages[index - 1];
+                            final userIdMatch = RegExp(r'ID: ([^\)]+)').firstMatch(prevMessage);
+                            if (userIdMatch != null) {
+                              setState(() {
+                                _recipientId = userIdMatch.group(1);
+                              });
+                              _addMessage('Selected recipient ID: $_recipientId');
+                            }
+                          },
+                          child: Text('Select as Recipient'),
+                        ),
+                      );
+                    }
                     return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Text(
-                        _statusMessages[index],
-                        style: const TextStyle(fontSize: 14),
-                      ),
+                      padding: EdgeInsets.symmetric(vertical: 4),
+                      child: Text(_messages[index], style: TextStyle(fontSize: 14)),
                     );
                   },
                 ),
               ),
-            ),
-          ],
+              SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _textController,
+                      decoration: InputDecoration(
+                        hintText: 'Enter message',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.attach_file),
+                    onPressed: _attachFiles,
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.send),
+                    onPressed: _sendMessage,
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -370,8 +406,15 @@ class _WebRTCPageState extends State<WebRTCPage> {
 
   @override
   void dispose() {
-    _socket?.disconnect();
+    _textController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _usernameController.dispose();
+    _identifierController.dispose();
     _scrollController.dispose();
+    _userId = null;
+    _currentIdentifier = null;
+    _recipientId = null;
     super.dispose();
   }
 }
