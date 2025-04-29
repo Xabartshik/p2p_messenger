@@ -1,5 +1,5 @@
 enum MessageType { text, json, file }
-enum MessageStatus { sent, delivered, read }
+enum MessageStatus { sent, delivered, undelivered, read }
 
 class FileAttachment {
   final String fileId;
@@ -54,6 +54,28 @@ class Message {
     required this.status,
   });
 
+Message copyWith({
+  String? messageId,
+  String? senderId,
+  String? recipientId,
+  MessageType? type,
+  String? textContent,
+  List<FileAttachment>? attachments,
+  DateTime? timestamp,
+  MessageStatus? status,
+}) {
+  return Message(
+    messageId: messageId ?? this.messageId,
+    senderId: senderId ?? this.senderId,
+    recipientId: recipientId ?? this.recipientId,
+    type: type ?? this.type,
+    textContent: textContent ?? this.textContent,
+    attachments: attachments ?? this.attachments,
+    timestamp: timestamp ?? this.timestamp,
+    status: status ?? this.status,
+  );
+}
+
   factory Message.fromJson(Map<String, dynamic> json) => Message(
         messageId: json['message_id'],
         senderId: json['sender_id'],
@@ -77,4 +99,6 @@ class Message {
         'timestamp': timestamp.toIso8601String(),
         'status': status.toString(),
       };
+
+
 }

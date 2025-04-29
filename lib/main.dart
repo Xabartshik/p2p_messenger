@@ -13,7 +13,7 @@ import 'package:p2p_messenger/api/models/user.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:io';
 
-const String url_server = 'https://rnrpe-213-108-187-53.a.free.pinggy.link';
+const String url_server = 'https://mc9nlj2g-5000.euw.devtunnels.ms/';
 
 extension StringExtension on String {
   bool matches(Pattern pattern) => RegExp(pattern as String).hasMatch(this);
@@ -51,13 +51,14 @@ class _MessengerPageState extends State<MessengerPage> {
   final _scrollController = ScrollController();
   bool _isConnecting = false;
   final _textController = TextEditingController();
-  final _emailController = TextEditingController(text: 'alice@example.com');
-  final _passwordController = TextEditingController(text: 'pass123');
-  final _usernameController = TextEditingController(text: 'Alice Red');
-  final _identifierController = TextEditingController(text: 'alice_red123');
+  final _emailController = TextEditingController(text: '1@example.com');
+  final _passwordController = TextEditingController(text: '1');
+  final _usernameController = TextEditingController(text: '1');
+  final _identifierController = TextEditingController(text: '1');
   String? _userId;
   String? _currentIdentifier;
   String? _recipientId;
+  String? _recipientName;
 
   void _addMessage(String message, {VoidCallback? onSelectRecipient, String? foundUserId}) {
     setState(() {
@@ -102,11 +103,13 @@ class _MessengerPageState extends State<MessengerPage> {
         _identifierController.text,
       );
       await FlutterSecureStorage().write(key: 'private_key_${user.userId}', value: keyPair['privateKey']);
+      final privateKey = await FlutterSecureStorage().read(key: 'private_key_${user.userId}');
+      print('Stored private key for user ${user.userId}: $privateKey');
       setState(() {
         _currentIdentifier = _identifierController.text;
         _userId = user.userId;
       });
-      _addMessage('Registered as ${user.username}, Identifier: ${user.identifier}');
+      _addMessage('Registered as ${user.username}, Identifier: ${user.identifier}, User ID: ${user.userId}');
     } catch (e, stackTrace) {
       print('Registration error: $e\nStackTrace: $stackTrace');
       _addMessage('Registration error: $e');
@@ -120,6 +123,8 @@ class _MessengerPageState extends State<MessengerPage> {
     setState(() { _isConnecting = true; });
     try {
       final user = await _messengerApi.loginUser(_emailController.text, _passwordController.text);
+      final privateKey = await FlutterSecureStorage().read(key: 'private_key_${user.userId}');
+      print('Loaded private key for user ${user.userId}: $privateKey');
       setState(() {
         _userId = user.userId;
         _currentIdentifier = user.identifier;
@@ -130,11 +135,15 @@ class _MessengerPageState extends State<MessengerPage> {
       _addMessage('WebRTC initialized');
 
       _messengerApi.listenForMessages(user.userId).listen((msg) {
+        print('Received message in UI for user $_userId: ${msg.toJson()}');
         if (msg.type == MessageType.text) {
-          _addMessage('Received text: ${msg.textContent}');
+          _addMessage('Received text: ${msg.textContent} from ${msg.senderId}');
         } else if (msg.type == MessageType.file) {
-          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')}');
+          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')} from ${msg.senderId}');
         }
+      }, onError: (e, stackTrace) {
+        print('Error in listenForMessages: $e\nStackTrace: $stackTrace');
+        _addMessage('Error receiving message: $e');
       });
     } catch (e, stackTrace) {
       print('Login error details: $e\nStackTrace: $stackTrace');
@@ -167,7 +176,7 @@ class _MessengerPageState extends State<MessengerPage> {
     );
     if (newId != null && newId.isNotEmpty) {
       try {
-        final user = await _messengerApi.userRepository.getUserById(_userId!);
+        final user = await _messengerApi.userRepository.getUserById(_userId!, _userId!);
         if (user != null) {
           await _messengerApi.userRepository.updateUser(
             User(
@@ -184,7 +193,8 @@ class _MessengerPageState extends State<MessengerPage> {
           });
           _addMessage('User ID updated to $newId');
         }
-      } catch (e) {
+      } catch (e, stackTrace) {
+        print('Update user ID error: $e\nStackTrace: $stackTrace');
         _addMessage('Error updating User ID: $e');
       }
     }
@@ -210,13 +220,19 @@ class _MessengerPageState extends State<MessengerPage> {
           timestamp: DateTime.now(),
           status: MessageStatus.sent,
         );
+        print('Sending message from $_userId to $_recipientId: ${message.textContent}');
         await _messengerApi.sendMessage(_userId!, _recipientId!, message);
-        _addMessage('Sent text: ${_textController.text} to $_recipientId');
+        _addMessage('Sent text: ${_textController.text} to $_recipientName (ID: $_recipientId)');
         _textController.clear();
       }
     } catch (e, stackTrace) {
       print('Send message error: $e\nStackTrace: $stackTrace');
       _addMessage('Error sending message: $e');
+      if (e.toString().contains('Recipient is offline')) {
+        _addMessage('Recipient is offline, message saved locally');
+      } else if (e.toString().contains('Failed to establish WebRTC connection')) {
+        _addMessage('Failed to connect to recipient, please try again');
+      }
     }
   }
 
@@ -252,12 +268,32 @@ class _MessengerPageState extends State<MessengerPage> {
           timestamp: DateTime.now(),
           status: MessageStatus.sent,
         );
+        print('Sending files from $_userId to $_recipientId: ${attachments.map((a) => a.fileName).join(', ')}');
         await _messengerApi.sendMessage(_userId!, _recipientId!, message);
-        _addMessage('Sent files: ${attachments.map((a) => a.fileName).join(', ')} to $_recipientId');
+        _addMessage('Sent files: ${attachments.map((a) => a.fileName).join(', ')} to $_recipientName (ID: $_recipientId)');
       }
     } catch (e, stackTrace) {
       print('Attach files error: $e\nStackTrace: $stackTrace');
       _addMessage('Error sending files: $e');
+      if (e.toString().contains('Recipient is offline')) {
+        _addMessage('Recipient is offline, files saved locally');
+      } else if (e.toString().contains('Failed to establish WebRTC connection')) {
+        _addMessage('Failed to connect to recipient, please try again');
+      }
+    }
+  }
+
+  Future<void> _retryConnection() async {
+    if (_userId == null || _recipientId == null) {
+      _addMessage('Error: Please login and select a recipient');
+      return;
+    }
+    try {
+      await _messengerApi.syncWithUser(_userId!, _recipientId!);
+      _addMessage('Retried connection to $_recipientName');
+    } catch (e, stackTrace) {
+      print('Retry connection error: $e\nStackTrace: $stackTrace');
+      _addMessage('Error retrying connection: $e');
     }
   }
 
@@ -278,7 +314,7 @@ class _MessengerPageState extends State<MessengerPage> {
                 child: Text('Change User ID'),
               ),
               Text('Current Identifier: ${_currentIdentifier ?? "Not logged in"}'),
-              Text('Current Recipient ID: ${_recipientId ?? "None selected"}'),
+              Text('Current Recipient: ${_recipientName ?? "None selected"} (ID: ${_recipientId ?? "None"})'),
               TextField(
                 controller: TextEditingController(),
                 decoration: InputDecoration(
@@ -288,13 +324,18 @@ class _MessengerPageState extends State<MessengerPage> {
                 onSubmitted: (value) async {
                   if (value.matches(r'^[a-z0-9_]+$')) {
                     try {
-                      final user = await _messengerApi.userRepository.getUserByIdentifier(value);
+                      if (_userId == null) {
+                        _addMessage('Error: Please login first');
+                        return;
+                      }
+                      final user = await _messengerApi.userRepository.getUserByIdentifier(value, _userId!);
                       if (user != null) {
                         _addMessage(
                           'Found user: ${user.username} (${user.identifier}, ID: ${user.userId})',
                           onSelectRecipient: () {
                             setState(() {
                               _recipientId = user.userId;
+                              _recipientName = user.username;
                             });
                             _addMessage('Selected recipient: ${user.username} (ID: ${user.userId})');
                           },
@@ -303,7 +344,8 @@ class _MessengerPageState extends State<MessengerPage> {
                       } else {
                         _addMessage('User with identifier $value not found');
                       }
-                    } catch (e) {
+                    } catch (e, stackTrace) {
+                      print('Search user error: $e\nStackTrace: $stackTrace');
                       _addMessage('Error searching user: $e');
                     }
                   } else {
@@ -338,6 +380,10 @@ class _MessengerPageState extends State<MessengerPage> {
                 onPressed: _isConnecting ? null : _startMessenger,
                 child: Text(_isConnecting ? 'Connecting...' : 'Login & Start Messenger'),
               ),
+              ElevatedButton(
+                onPressed: _isConnecting ? null : _retryConnection,
+                child: Text('Retry Connection'),
+              ),
               SizedBox(height: 16),
               Container(
                 height: 300,
@@ -360,6 +406,7 @@ class _MessengerPageState extends State<MessengerPage> {
                             if (userIdMatch != null) {
                               setState(() {
                                 _recipientId = userIdMatch.group(1);
+                                _recipientName = prevMessage.split('Found user: ')[1].split(' (')[0];
                               });
                               _addMessage('Selected recipient ID: $_recipientId');
                             }
@@ -415,6 +462,7 @@ class _MessengerPageState extends State<MessengerPage> {
     _userId = null;
     _currentIdentifier = null;
     _recipientId = null;
+    _recipientName = null;
     super.dispose();
   }
 }

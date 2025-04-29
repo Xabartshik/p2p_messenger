@@ -20,7 +20,6 @@ class MessengerAPI {
 
   Future<User> registerUser(String username, String email, String password, String publicKey, String identifier) async {
     final user = await userRepository.createUser(username, email, password, publicKey, identifier);
-    await authService.generateToken(user);
     return user;
   }
 
@@ -29,6 +28,7 @@ class MessengerAPI {
   }
 
   Future<void> sendMessage(String senderId, String recipientId, Message message) async {
+    print('Sending message from $senderId to $recipientId: ${message.toJson()}');
     if (message.type == MessageType.file && message.attachments != null) {
       final fileUrls = await fileStorage.uploadFiles(message.attachments!);
       message = Message(
@@ -53,10 +53,26 @@ class MessengerAPI {
     }
     await messageRepository.saveMessage(message);
     try {
+      // Проверяем статус получателя
+      final recipient = await userRepository.getUserById(recipientId, senderId);
+      if (recipient == null) {
+        throw Exception('Recipient not found');
+      }
+      print('Recipient status: ${recipient.status}');
+      if (recipient.status == 'offline') {
+        throw Exception('Recipient is offline');
+      }
       await webRTCService.sendMessage(message);
-    } catch (e) {
-      print('Recipient offline, message saved locally: $e');
-      // Сообщение будет отправлено при следующем соединении
+      await messageRepository.saveMessage(message.copyWith(status: MessageStatus.delivered));
+      print('Message marked as delivered: ${message.messageId}');
+    } catch (e, stackTrace) {
+      print('Failed to send message to $recipientId: $e\nStackTrace: $stackTrace');
+      // Планируем повторную попытку синхронизации
+      Future.delayed(Duration(seconds: 5), () {
+        print('Scheduling sync for message ${message.messageId} to $recipientId');
+        syncWithUser(senderId, recipientId);
+      });
+      throw Exception('Recipient offline or connection failed: $e');
     }
   }
 
@@ -75,23 +91,39 @@ class MessengerAPI {
   }
 
   Stream<Message> listenForMessages(String userId) {
+    print('Listening for messages for user $userId');
     return webRTCService.onMessageReceived();
   }
 
   Future<void> initializeConnection(String userId, String serverUrl) async {
     final token = await FlutterSecureStorage().read(key: 'jwt_token_$userId');
-    await webRTCService.initialize(userId, serverUrl, token!);
+    if (token == null) {
+      throw Exception('No token found for user $userId');
+    }
+    print('Initializing WebRTC connection for user $userId with token $token');
+    await webRTCService.initialize(userId, serverUrl, token);
   }
 
   Future<void> syncWithUser(String userId, String recipientId) async {
-    final messages = await messageRepository.getMessagesForUser(userId, recipientId);
-    for (var message in messages.where((m) => m.status == MessageStatus.sent)) {
-      try {
-        await webRTCService.sendMessage(message);
-        await messageRepository.saveMessage(message.copyWith(status: MessageStatus.delivered));
-      } catch (e) {
-        print('Sync failed for message ${message.messageId}: $e');
+    try {
+      final recipient = await userRepository.getUserById(recipientId, userId);
+      print('Syncing with recipient $recipientId, status: ${recipient?.status}');
+      if (recipient?.status == 'online') {
+        final messages = await messageRepository.getMessagesForUser(userId, recipientId);
+        for (var message in messages.where((m) => m.status == MessageStatus.sent)) {
+          try {
+            await webRTCService.sendMessage(message);
+            await messageRepository.saveMessage(message.copyWith(status: MessageStatus.delivered));
+            print('Synced message ${message.messageId} to $recipientId');
+          } catch (e, stackTrace) {
+            print('Sync failed for message ${message.messageId}: $e\nStackTrace: $stackTrace');
+          }
+        }
+      } else {
+        print('Recipient $recipientId is offline, skipping sync');
       }
+    } catch (e, stackTrace) {
+      print('Sync error: $e\nStackTrace: $stackTrace');
     }
   }
 }

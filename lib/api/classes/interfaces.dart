@@ -3,10 +3,10 @@ import 'package:p2p_messenger/api/models/user.dart';
 
 abstract class IUserRepository {
   Future<User> createUser(String username, String email, String password, String publicKey, String identifier);
-  Future<User?> getUserById(String userId);
+  Future<User?> getUserById(String userId, String currentUserId);
   Future<void> updateUser(User user);
   Future<void> deleteUser(String userId);
-  Future<User?> getUserByIdentifier(String identifier);
+  Future<User?> getUserByIdentifier(String identifier, String currentUserId);
 }
 
 
