@@ -30,6 +30,8 @@ dependencies:
   jwt_decoder: ^2.0.1  # Парсинг и валидация JWT-токенов
   # Работа с выбором файлов
   file_picker: ^10.1.2  # Работа с выбором файлов
+  url_launcher: ^6.1.10
+  open_file: ^3.3.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

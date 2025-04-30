@@ -212,7 +212,7 @@ class WebRTCService implements IWebRTCService {
         }
       } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
         print('Data channel closed, attempting to reconnect...');
-        //_reconnect();
+        _reconnect();
       }
     };
 
@@ -323,9 +323,15 @@ class WebRTCService implements IWebRTCService {
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
           state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
         print('Connection failed or disconnected, attempting to reconnect...');
-        //_reconnect();
+        _reconnect();
       }
     };
+  }
+
+  void _cancelOfferTimeout() {
+    _offerTimeoutTimer?.cancel();
+    _offerTimeoutTimer = null;
+    print("Offer timeout cancelled - offer received");
   }
 
   Future<void> _handleOffer(Map<String, dynamic> data, String peerId, String token) async {
@@ -334,6 +340,7 @@ class WebRTCService implements IWebRTCService {
       await _peerConnection!.setLocalDescription(RTCSessionDescription('', '')); // Откат локального offer
     }
     try {
+      _cancelOfferTimeout();
       await _peerConnection!.setRemoteDescription(
         RTCSessionDescription(data['sdp'], data['type']),
       );
@@ -351,7 +358,7 @@ class WebRTCService implements IWebRTCService {
       await _startSync(peerId, data['from']);
     } catch (e, stackTrace) {
       print('Error handling offer: $e\nStackTrace: $stackTrace');
-      //_reconnect();
+      _reconnect();
     }
   }
 
@@ -490,12 +497,13 @@ class WebRTCService implements IWebRTCService {
       _offerTimeoutTimer?.cancel();
       _offerTimeoutTimer = Timer(Duration(seconds: 10), () async {
         print('Таймер сработал');
+        print('No offer received, becoming initiator');
+        _isInitiator = true;
+        await _sendOffer(senderId, recipientId);
         print('_peerConnection!.signalingState = ${_peerConnection!.signalingState}, _dataChannel?.state = ${_dataChannel?.state}');
         if (_peerConnection!.signalingState == RTCSignalingState.RTCSignalingStateStable &&
             _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
-          print('No offer received, becoming initiator');
-          _isInitiator = true;
-          await _sendOffer(senderId, recipientId);
+
         }
         print('_peerConnection!.signalingState = ${_peerConnection!.signalingState}, _dataChannel?.state = ${_dataChannel?.state}');
       });
@@ -519,7 +527,7 @@ class WebRTCService implements IWebRTCService {
       print('Sent offer from $senderId to $recipientId');
     } catch (e, stackTrace) {
       print('Error sending offer: $e\nStackTrace: $stackTrace');
-      //_reconnect();
+      _reconnect();
     }
   }
 

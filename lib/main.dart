@@ -109,7 +109,7 @@ class _MessengerPageState extends State<MessengerPage> {
         _currentIdentifier = _identifierController.text;
         _userId = user.userId;
       });
-      _addMessage('Registered as ${user.username}, Identifier: ${user.identifier}, User ID: ${user.userId}');
+      _addMessage('Registered as ${user.username}, Identifier: ${user.identifier}, User ID: ${user.userId}, p_key = $privateKey');
     } catch (e, stackTrace) {
       print('Registration error: $e\nStackTrace: $stackTrace');
       _addMessage('Registration error: $e');
@@ -135,11 +135,12 @@ class _MessengerPageState extends State<MessengerPage> {
       _addMessage('WebRTC initialized');
 
       _messengerApi.listenForMessages(user.userId).listen((msg) {
-        print('Received message in UI for user $_userId: ${msg.toJson()}');
+        DateTime now = DateTime.now();
+        print('Received message in UI for user $_userId: ${msg.toJson()}, Time: $now');
         if (msg.type == MessageType.text) {
-          _addMessage('Received text: ${msg.textContent} from ${msg.senderId}');
+          _addMessage('Received text: ${msg.textContent} from ${msg.senderId}, Time: $now');
         } else if (msg.type == MessageType.file) {
-          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')} from ${msg.senderId}');
+          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')} from ${msg.senderId}, Time: $now');
         }
       }, onError: (e, stackTrace) {
         print('Error in listenForMessages: $e\nStackTrace: $stackTrace');
