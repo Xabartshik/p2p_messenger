@@ -27,7 +27,6 @@ class AuthService implements IAuthService {
           throw Exception('No token received from server');
         }
         await storage.write(key: 'jwt_token_${user.userId}', value: token);
-        await storage.write(key: 'private_key_${user.userId}', value: data['private_key']);
         return user;
       }
       throw Exception('Login failed: ${response.body}');

@@ -4,27 +4,78 @@ import 'package:p2p_messenger/api/models/message.dart';
 import 'package:p2p_messenger/api/models/user.dart';
 
 class MessengerAPI {
+  final String serverUrl;
   final IUserRepository userRepository;
   final IMessageRepository messageRepository;
   final IFileStorage fileStorage;
   final IWebRTCService webRTCService;
   final IAuthService authService;
+  final FlutterSecureStorage _secureStorage;
 
   MessengerAPI({
+    required this.serverUrl,
     required this.userRepository,
     required this.messageRepository,
     required this.fileStorage,
     required this.webRTCService,
     required this.authService,
-  });
+  }) : _secureStorage = FlutterSecureStorage();
 
-  Future<User> registerUser(String username, String email, String password, String publicKey, String identifier) async {
+  Future<User> registerUser(String username, String email, String password, String identifier) async {
+    // Генерация ключей
+    final keyPair = await webRTCService.encryptionService.generateKeyPair();
+    final publicKey = keyPair['publicKey']!;
+    final privateKey = keyPair['privateKey']!;
+
+    print('Ключи при регистрации, PUBLIC: $publicKey, PRIVATE: $privateKey');
+
+    // Регистрация пользователя
     final user = await userRepository.createUser(username, email, password, publicKey, identifier);
+
+    // Сохранение приватного ключа и токена
+    await _secureStorage.write(key: 'private_key_${user.userId}', value: privateKey);
+    await _secureStorage.write(key: 'jwt_token_${user.userId}', value: user.token!);
+    await _secureStorage.write(key: 'user_id', value: user.userId);
+
+    // Инициализация WebRTC
+    await initializeConnection(user.userId, serverUrl);
+
     return user;
   }
 
   Future<User> loginUser(String email, String password) async {
-    return await authService.login(email, password);
+    // Логин пользователя
+    final user = await authService.login(email, password);
+
+    // Проверка и генерация ключей
+    String? privateKey = await _secureStorage.read(key: 'private_key_${user.userId}');
+    if (privateKey == null) {
+      print('Private key not found for user ${user.userId}, generating new key pair...');
+      final keyPair = await webRTCService.encryptionService.generateKeyPair();
+      privateKey = keyPair['privateKey']!;
+      final publicKey = keyPair['publicKey']!;
+      await _secureStorage.write(key: 'private_key_${user.userId}', value: privateKey);
+      await userRepository.updateUser(
+        User(
+          userId: user.userId,
+          username: user.username,
+          email: user.email,
+          status: user.status,
+          publicKey: publicKey,
+          identifier: user.identifier,
+          token: user.token,
+        ),
+      );
+    }
+
+    // Сохранение токена и userId
+    await _secureStorage.write(key: 'jwt_token_${user.userId}', value: user.token!);
+    await _secureStorage.write(key: 'user_id', value: user.userId);
+
+    // Инициализация WebRTC
+    await initializeConnection(user.userId, serverUrl);
+
+    return user;
   }
 
   Future<void> sendMessage(String senderId, String recipientId, Message message) async {
@@ -53,7 +104,6 @@ class MessengerAPI {
     }
     await messageRepository.saveMessage(message);
     try {
-      // Проверяем статус получателя
       final recipient = await userRepository.getUserById(recipientId, senderId);
       if (recipient == null) {
         throw Exception('Recipient not found');
@@ -67,7 +117,6 @@ class MessengerAPI {
       print('Message marked as delivered: ${message.messageId}');
     } catch (e, stackTrace) {
       print('Failed to send message to $recipientId: $e\nStackTrace: $stackTrace');
-      // Планируем повторную попытку синхронизации
       Future.delayed(Duration(seconds: 5), () {
         print('Scheduling sync for message ${message.messageId} to $recipientId');
         syncWithUser(senderId, recipientId);
@@ -96,7 +145,7 @@ class MessengerAPI {
   }
 
   Future<void> initializeConnection(String userId, String serverUrl) async {
-    final token = await FlutterSecureStorage().read(key: 'jwt_token_$userId');
+    final token = await _secureStorage.read(key: 'jwt_token_$userId');
     if (token == null) {
       throw Exception('No token found for user $userId');
     }

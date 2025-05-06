@@ -43,11 +43,15 @@ class WebRTCService implements IWebRTCService {
     final configuration = {
       'iceServers': [
         {'urls': 'stun:stun.l.google.com:19302'},
-        // Замените на реальный TURN-сервер
         {
-          'urls': 'turn:your-turn-server.com:3478',
-          'username': 'your-username',
-          'credential': 'your-credential',
+          'urls': 'turn:openrelay.metered.ca:80',
+          'username': 'openrelayproject',
+          'credential': 'openrelayproject',
+        },
+        {
+          'urls': 'turn:openrelay.metered.ca:443',
+          'username': 'openrelayproject',
+          'credential': 'openrelayproject',
         },
       ],
       'sdpSemantics': 'unified-plan',
@@ -81,7 +85,6 @@ class WebRTCService implements IWebRTCService {
             RTCSessionDescription(data['sdp'], data['type']),
           );
           _currentRecipientId = data['from'];
-          await _startSync(peerId, data['from']);
         } else if (data['type'] == 'candidate') {
           print('Adding ICE candidate from ${data['from']}');
           await _peerConnection!.addCandidate(
@@ -101,13 +104,65 @@ class WebRTCService implements IWebRTCService {
     print('Socket connection initiated for peer $peerId');
   }
 
+  Future<void> _handleRequestMessages(Map<String, dynamic> metadata, String peerId) async {
+    print('Handling request_messages for peer $peerId: $metadata');
+    final messageIds = metadata['message_ids'] as List<dynamic>;
+    final recipientId = metadata['sender_id'];
+    final sender = await userRepository.getUserById(peerId, peerId);
+    final recipient = await userRepository.getUserById(recipientId, peerId);
+    if (sender == null || recipient == null) {
+      print('Sender or recipient not found: sender=$peerId, recipient=$recipientId');
+      return;
+    }
+
+    final messages = await messageRepository.getMessagesByIds(messageIds.cast<String>());
+    print('Found ${messages.length} messages for IDs: $messageIds');
+    for (final message in messages) {
+      if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
+        print('Data channel not open, cannot send requested message: ${message.messageId}');
+        return;
+      }
+
+      final metadata = message.toJson();
+      if (message.type == api_message.MessageType.text || message.type == api_message.MessageType.json) {
+        final encryptedContent = await encryptionService.encrypt(
+          utf8.encode(message.textContent!),
+          recipient.publicKey,
+        );
+        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(metadata)));
+        _dataChannel!.send(RTCDataChannelMessage.fromBinary(Uint8List.fromList(encryptedContent)));
+        print('Sent requested text message: ${message.messageId}');
+      } else if (message.type == api_message.MessageType.file) {
+        for (var attachment in message.attachments!) {
+          final encryptedContent = await encryptionService.encrypt(
+            attachment.content is String ? (await File(attachment.content).readAsBytes()) : attachment.content,
+            recipient.publicKey,
+          );
+          final updatedMetadata = {
+            ...metadata,
+            'attachments': [
+              {
+                'file_id': attachment.fileId,
+                'file_name': attachment.fileName,
+                'file_type': attachment.fileType,
+                'size': attachment.size,
+              }
+            ],
+          };
+          _dataChannel!.send(RTCDataChannelMessage(jsonEncode(updatedMetadata)));
+          _dataChannel!.send(RTCDataChannelMessage.fromBinary(Uint8List.fromList(encryptedContent)));
+          print('Sent requested file: ${attachment.fileName}, messageId: ${message.messageId}');
+        }
+      }
+    }
+  }
+
+
   Future<void> _createPeerConnection(Map<String, dynamic> configuration) async {
     _peerConnection = await createPeerConnection(configuration);
 
     final dataChannelInit = RTCDataChannelInit()..binaryType = 'binary';
     _dataChannel = await _peerConnection!.createDataChannel('messenger', dataChannelInit);
-
-    
 
     _dataChannel!.onMessage = (message) async {
       print('Received data channel message for peer $_currentPeerId: isBinary=${message.isBinary}');
@@ -119,6 +174,11 @@ class WebRTCService implements IWebRTCService {
             await _handleSyncMetadata(_pendingMetadata!, _currentPeerId!);
             _pendingMetadata = null;
           }
+          else if (_pendingMetadata!['type'] == 'request_messages') {
+            await _handleRequestMessages(_pendingMetadata!, _currentPeerId!);
+            _pendingMetadata = null;
+          }
+
         } else {
           final metadata = _pendingMetadata!;
           print('Processing message with metadata: $metadata');
@@ -185,7 +245,7 @@ class WebRTCService implements IWebRTCService {
               senderId: metadata['sender_id'],
               recipientId: metadata['recipient_id'],
               type: api_message.MessageType.values.firstWhere((e) => e.toString() == metadata['type']),
-              textContent: metadata['text_content'],
+              textContent: metadata['type'] == 'MessageType.text' || metadata['type'] == 'MessageType.json' ? content as String? : null,
               attachments: attachments,
               timestamp: DateTime.parse(metadata['timestamp']),
               status: api_message.MessageStatus.delivered,
@@ -207,9 +267,10 @@ class WebRTCService implements IWebRTCService {
       print('Data channel state changed to: $state for peer $_currentPeerId');
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
         _connectionAttempts = 0; // Сброс счетчика попыток
-        if (_currentRecipientId != null) {
-          _startSync(_currentPeerId!, _currentRecipientId!); // Повторная синхронизация
-        }
+          if (_currentRecipientId != null) {
+          // Вызываем синхронизацию только когда канал открыт и получатель установлен
+          _startSync(_currentPeerId!, _currentRecipientId!);
+    } 
       } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
         print('Data channel closed, attempting to reconnect...');
         _reconnect();
@@ -217,82 +278,10 @@ class WebRTCService implements IWebRTCService {
     };
 
     _peerConnection!.onDataChannel = (channel) {
-    _dataChannel = channel;
-    _dataChannel!.onMessage = (message) async {
-      print('Received data channel message for peer $_currentPeerId: isBinary=${message.isBinary}');
-      try {
-        if (_pendingMetadata == null) {
-          _pendingMetadata = jsonDecode(message.text);
-          print('Received metadata: $_pendingMetadata');
-          if (_pendingMetadata!['type'] == 'sync_metadata') {
-            await _handleSyncMetadata(_pendingMetadata!, _currentRecipientId!);
-            _pendingMetadata = null;
-          }
-        } else {
-          final metadata = _pendingMetadata!;
-          print('Processing message with metadata: $metadata');
-          if (metadata['type'] == 'MessageType.text' || metadata['type'] == 'MessageType.json' || metadata['type'] == 'MessageType.file') {
-            final recipient = await userRepository.getUserById(metadata['recipient_id'], _currentRecipientId!);
-            if (recipient == null) {
-              print('Recipient not found for ID: ${metadata['recipient_id']}');
-              _pendingMetadata = null;
-              return;
-            }
-            final privateKey = await FlutterSecureStorage().read(key: 'private_key_${recipient.userId}');
-            if (privateKey == null) {
-              print('Private key not found for user: ${recipient.userId}');
-              _pendingMetadata = null;
-              return;
-            }
-
-            final decryptedContent = await encryptionService.decrypt(
-              message.isBinary ? message.binary : utf8.encode(message.text),
-              privateKey,
-            );
-
-            final content = metadata['type'] == 'MessageType.text' || metadata['type'] == 'MessageType.json'
-                ? utf8.decode(decryptedContent)
-                : decryptedContent;
-
-            List<api_message.FileAttachment>? attachments;
-            if (metadata['type'] == 'MessageType.file') {
-              attachments = metadata['attachments'].map<api_message.FileAttachment>((a) {
-                return api_message.FileAttachment(
-                  fileId: a['file_id'],
-                  fileName: a['file_name'],
-                  fileType: a['file_type'],
-                  content: content,
-                  size: a['size'],
-                );
-              }).toList();
-            }
-
-            final msg = api_message.Message(
-              messageId: metadata['message_id'],
-              senderId: metadata['sender_id'],
-              recipientId: metadata['recipient_id'],
-              type: api_message.MessageType.values.firstWhere((e) => e.toString() == metadata['type']),
-              textContent: metadata['text_content'],
-              attachments: attachments,
-              timestamp: DateTime.parse(metadata['timestamp']),
-              status: api_message.MessageStatus.delivered,
-            );
-            await messageRepository.saveMessage(msg);
-            print('Saved message: ${msg.toJson()}');
-            _messageStreamController.add(msg);
-            print('Streamed message to UI: ${msg.textContent}');
-            _pendingMetadata = null;
-          }
-        }
-      } catch (e, stackTrace) {
-        print('Error processing message for peer $_currentPeerId: $e\nStackTrace: $stackTrace');
-        _pendingMetadata = null;
-      }
+      _dataChannel = channel;
+      // Обработчики уже установлены при создании канала, здесь только логирование
+      print('Received remote data channel for peer $_currentPeerId');
     };
-    _dataChannel!.onDataChannelState = (state) {
-      print('Data channel state changed to: $state for peer $_currentRecipientId');
-    };
-  };
 
     _peerConnection!.onIceCandidate = (candidate) async {
       if (_currentRecipientId != null) {
@@ -355,7 +344,6 @@ class WebRTCService implements IWebRTCService {
       });
       print('Sent answer to ${data['from']}');
       _currentRecipientId = data['from'];
-      await _startSync(peerId, data['from']);
     } catch (e, stackTrace) {
       print('Error handling offer: $e\nStackTrace: $stackTrace');
       _reconnect();
@@ -375,9 +363,14 @@ class WebRTCService implements IWebRTCService {
       'iceServers': [
         {'urls': 'stun:stun.l.google.com:19302'},
         {
-          'urls': 'turn:your-turn-server.com:3478',
-          'username': 'your-username',
-          'credential': 'your-credential',
+          'urls': 'turn:openrelay.metered.ca:80',
+          'username': 'openrelayproject',
+          'credential': 'openrelayproject',
+        },
+        {
+          'urls': 'turn:openrelay.metered.ca:443',
+          'username': 'openrelayproject',
+          'credential': 'openrelayproject',
         },
       ],
       'sdpSemantics': 'unified-plan',
@@ -390,6 +383,11 @@ class WebRTCService implements IWebRTCService {
   }
 
   Future<void> _startSync(String peerId, String recipientId) async {
+    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
+    print('Sync delayed - data channel not ready');
+    return;
+  }
+
     print('Starting sync for peer $peerId with recipient $recipientId');
     if (_dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
       final metadata = await messageRepository.getMessageMetadata(peerId, recipientId);
@@ -415,7 +413,6 @@ class WebRTCService implements IWebRTCService {
         .where((m) => !localIds.contains(m['message_id']))
         .map((m) => m['message_id'])
         .toList();
-
     if (missingIds.isNotEmpty && _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
       _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
         'type': 'request_messages',
@@ -427,43 +424,44 @@ class WebRTCService implements IWebRTCService {
     }
   }
 
-  @override
-  Future<void> sendMessage(api_message.Message message) async {
+    @override
+    Future<void> sendMessage(api_message.Message message) async {
     print('Sending message from ${message.senderId} to ${message.recipientId}');
     final recipient = await userRepository.getUserById(message.recipientId, message.senderId);
     if (recipient == null) {
       throw Exception('Recipient not found');
     }
 
-    if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
-      print('Data channel not open, initiating connection');
+    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
       await _initiateConnection(message.senderId, message.recipientId);
-      for (var i = 0; i < 30; i++) {
-        if (_dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
-          break;
-        }
-        await Future.delayed(Duration(milliseconds: 500));
-      }
+      await Future.delayed(Duration(seconds: 30));
       if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
-        throw Exception('Failed to establish WebRTC connection: data channel not open');
+        throw Exception('Failed to establish WebRTC connection');
       }
     }
-    final metadata = message.toJson();
 
-    if (message.type == api_message.MessageType.text || message.type == api_message.MessageType.json) {
+    final metadata = message.toJson();
+    if (message.type == api_message.MessageType.text || 
+        message.type == api_message.MessageType.json) {
+      
       final encryptedContent = await encryptionService.encrypt(
         utf8.encode(message.textContent!),
         recipient.publicKey,
       );
       _dataChannel!.send(RTCDataChannelMessage(jsonEncode(metadata)));
-      _dataChannel!.send(RTCDataChannelMessage.fromBinary(Uint8List.fromList(encryptedContent)));
-      print('Sent text message: ${message.textContent}');
+      _dataChannel!.send(RTCDataChannelMessage.fromBinary(encryptedContent));
+      
     } else if (message.type == api_message.MessageType.file) {
       for (var attachment in message.attachments!) {
+        final fileContent = attachment.content is String 
+            ? await File(attachment.content as String).readAsBytes()
+            : attachment.content as Uint8List;
+            
         final encryptedContent = await encryptionService.encrypt(
-          attachment.content is String ? (await File(attachment.content).readAsBytes()) : attachment.content,
+          fileContent,
           recipient.publicKey,
         );
+        
         final updatedMetadata = {
           ...metadata,
           'attachments': [
@@ -475,18 +473,18 @@ class WebRTCService implements IWebRTCService {
             }
           ],
         };
+        
         _dataChannel!.send(RTCDataChannelMessage(jsonEncode(updatedMetadata)));
-        _dataChannel!.send(RTCDataChannelMessage.fromBinary(Uint8List.fromList(encryptedContent)));
-        print('Sent file: ${attachment.fileName}');
+        _dataChannel!.send(RTCDataChannelMessage.fromBinary(encryptedContent));
       }
     }
   }
 
   Future<void> _initiateConnection(String senderId, String recipientId) async {
     int result = senderId.compareTo(recipientId);
-    if (result < 0){
+    if (result < 0) {
       _isInitiator = true;
-    } 
+    }
     print('Initiating WebRTC connection from $senderId to $recipientId, isInitiator: $_isInitiator');
     if (_peerConnection == null || _dataChannel == null) {
       throw Exception('WebRTC not initialized');
@@ -495,17 +493,11 @@ class WebRTCService implements IWebRTCService {
     if (!_isInitiator) {
       print('Waiting for offer as non-initiator');
       _offerTimeoutTimer?.cancel();
-      _offerTimeoutTimer = Timer(Duration(seconds: 10), () async {
+      _offerTimeoutTimer = Timer(Duration(seconds: 5), () async {
         print('Таймер сработал');
         print('No offer received, becoming initiator');
         _isInitiator = true;
         await _sendOffer(senderId, recipientId);
-        print('_peerConnection!.signalingState = ${_peerConnection!.signalingState}, _dataChannel?.state = ${_dataChannel?.state}');
-        if (_peerConnection!.signalingState == RTCSignalingState.RTCSignalingStateStable &&
-            _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
-
-        }
-        print('_peerConnection!.signalingState = ${_peerConnection!.signalingState}, _dataChannel?.state = ${_dataChannel?.state}');
       });
       return;
     }
@@ -551,3 +543,5 @@ class WebRTCService implements IWebRTCService {
     return _dataChannel?.state.toString();
   }
 }
+
+

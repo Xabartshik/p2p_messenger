@@ -1,3 +1,4 @@
+import 'package:open_file/open_file.dart';
 import 'package:p2p_messenger/api/classes/interfaces.dart';
 import 'package:p2p_messenger/api/models/message.dart';
 import 'package:path_provider/path_provider.dart';
@@ -46,10 +47,15 @@ class MessageRepository implements IMessageRepository {
 
   Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String recipientId) async {
     final messages = await getMessagesForUser(userId, recipientId);
+    final filePath = await _getMessagesPath(); // Ваш метод получения пути
+    final result = await OpenFile.open(filePath);
+    
+    print('Есть в файле: ${result.message}'); // Результат открытия файла
     return messages.map((m) => {
       'message_id': m.messageId,
       'timestamp': m.timestamp.toIso8601String(),
     }).toList();
+
   }
 
   Future<void> syncMessages(List<Message> remoteMessages) async {
@@ -62,5 +68,23 @@ class MessageRepository implements IMessageRepository {
     final newMessages = remoteMessages.where((m) => !localIds.contains(m.messageId)).map((m) => m.toJson());
     localMessages.addAll(newMessages);
     await file.writeAsString(jsonEncode(localMessages));
+  }
+
+  Future<List<Message>> getMessagesByIds(List<String> messageIds) async {
+    try {
+      final file = File(await _getMessagesPath());
+      if (!await file.exists()) {
+        return [];
+      }
+
+      final messages = jsonDecode(await file.readAsString()) as List<dynamic>;
+      return messages
+          .map((m) => Message.fromJson(m))
+          .where((m) => messageIds.contains(m.messageId))
+          .toList();
+    } catch (e, stackTrace) {
+      print('Error retrieving messages by IDs $messageIds: $e\nStackTrace: $stackTrace');
+      rethrow;
+    }
   }
 }

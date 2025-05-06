@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:p2p_messenger/api/api.dart';
 import 'package:p2p_messenger/api/classes/auth_service.dart';
 import 'package:p2p_messenger/api/classes/encryption_service.dart';
@@ -41,6 +40,7 @@ class MessengerPage extends StatefulWidget {
 
 class _MessengerPageState extends State<MessengerPage> {
   final _messengerApi = MessengerAPI(
+    serverUrl: url_server,
     userRepository: UserRepository(url_server, EncryptionService()),
     messageRepository: MessageRepository(),
     fileStorage: FileStorage(),
@@ -88,59 +88,62 @@ class _MessengerPageState extends State<MessengerPage> {
   }
 
   Future<void> _registerUser() async {
-    setState(() { _isConnecting = true; });
+    setState(() => _isConnecting = true);
     try {
       if (!_identifierController.text.matches(r'^[a-z0-9_]+$')) {
         _addMessage('Invalid identifier: use only lowercase letters, numbers, and underscores');
         return;
       }
-      final keyPair = await _messengerApi.webRTCService.encryptionService.generateKeyPair();
       final user = await _messengerApi.registerUser(
         _usernameController.text,
         _emailController.text,
         _passwordController.text,
-        keyPair['publicKey']!,
         _identifierController.text,
       );
-      await FlutterSecureStorage().write(key: 'private_key_${user.userId}', value: keyPair['privateKey']);
-      final privateKey = await FlutterSecureStorage().read(key: 'private_key_${user.userId}');
-      print('Stored private key for user ${user.userId}: $privateKey');
       setState(() {
-        _currentIdentifier = _identifierController.text;
+        _currentIdentifier = user.identifier;
         _userId = user.userId;
       });
-      _addMessage('Registered as ${user.username}, Identifier: ${user.identifier}, User ID: ${user.userId}, p_key = $privateKey');
+      _addMessage('Registered as ${user.username}, Identifier: ${user.identifier}, User ID: ${user.userId}');
+
+      // Подписка на сообщения
+      _messengerApi.listenForMessages(user.userId).listen((msg) {
+        print('Received message in UI for user $_userId: ${msg.toJson()}');
+        if (msg.type == MessageType.text) {
+          _addMessage('Received text: ${msg.textContent} from ${msg.senderId}');
+        } else if (msg.type == MessageType.file) {
+          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')} from ${msg.senderId}');
+        }
+      }, onError: (e, stackTrace) {
+        print('Error in listenForMessages: $e\nStackTrace: $stackTrace');
+        _addMessage('Error receiving message: $e');
+      });
     } catch (e, stackTrace) {
       print('Registration error: $e\nStackTrace: $stackTrace');
       _addMessage('Registration error: $e');
     } finally {
-      setState(() { _isConnecting = false; });
+      setState(() => _isConnecting = false);
     }
   }
 
   Future<void> _startMessenger() async {
     if (_isConnecting) return;
-    setState(() { _isConnecting = true; });
+    setState(() => _isConnecting = true);
     try {
       final user = await _messengerApi.loginUser(_emailController.text, _passwordController.text);
-      final privateKey = await FlutterSecureStorage().read(key: 'private_key_${user.userId}');
-      print('Loaded private key for user ${user.userId}: $privateKey');
       setState(() {
         _userId = user.userId;
         _currentIdentifier = user.identifier;
       });
       _addMessage('Logged in as ${user.username}, User ID: ${user.userId}, Identifier: ${user.identifier}');
 
-      await _messengerApi.initializeConnection(user.userId, url_server);
-      _addMessage('WebRTC initialized');
-
+      // Подписка на сообщения
       _messengerApi.listenForMessages(user.userId).listen((msg) {
-        DateTime now = DateTime.now();
-        print('Received message in UI for user $_userId: ${msg.toJson()}, Time: $now');
+        print('Received message in UI for user $_userId: ${msg.toJson()}');
         if (msg.type == MessageType.text) {
-          _addMessage('Received text: ${msg.textContent} from ${msg.senderId}, Time: $now');
+          _addMessage('Received text: ${msg.textContent} from ${msg.senderId}');
         } else if (msg.type == MessageType.file) {
-          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')} from ${msg.senderId}, Time: $now');
+          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')} from ${msg.senderId}');
         }
       }, onError: (e, stackTrace) {
         print('Error in listenForMessages: $e\nStackTrace: $stackTrace');
@@ -150,7 +153,7 @@ class _MessengerPageState extends State<MessengerPage> {
       print('Login error details: $e\nStackTrace: $stackTrace');
       _addMessage('Error: $e');
     } finally {
-      setState(() { _isConnecting = false; });
+      setState(() => _isConnecting = false);
     }
   }
 
