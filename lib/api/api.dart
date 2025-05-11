@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:p2p_messenger/api/classes/interfaces.dart';
 import 'package:p2p_messenger/api/models/message.dart';
 import 'package:p2p_messenger/api/models/user.dart';
@@ -7,16 +9,15 @@ class MessengerAPI {
   final String serverUrl;
   final IUserRepository userRepository;
   final IMessageRepository messageRepository;
-  final IFileStorage fileStorage;
   final IWebRTCService webRTCService;
   final IAuthService authService;
   final FlutterSecureStorage _secureStorage;
-
+  User? currentUser;
+  
   MessengerAPI({
     required this.serverUrl,
     required this.userRepository,
     required this.messageRepository,
-    required this.fileStorage,
     required this.webRTCService,
     required this.authService,
   }) : _secureStorage = FlutterSecureStorage();
@@ -34,11 +35,12 @@ class MessengerAPI {
 
     // Сохранение приватного ключа и токена
     await _secureStorage.write(key: 'private_key_${user.userId}', value: privateKey);
-    await _secureStorage.write(key: 'jwt_token_${user.userId}', value: user.token!);
-    await _secureStorage.write(key: 'user_id', value: user.userId);
+    await _secureStorage.write(key: "user_id", value: user.userId);
 
     // Инициализация WebRTC
     await initializeConnection(user.userId, serverUrl);
+
+    currentUser = await userRepository.getCurrentUser();
 
     return user;
   }
@@ -70,39 +72,53 @@ class MessengerAPI {
 
     // Сохранение токена и userId
     await _secureStorage.write(key: 'jwt_token_${user.userId}', value: user.token!);
-    await _secureStorage.write(key: 'user_id', value: user.userId);
-
+    await _secureStorage.write(key: "user_id", value: user.userId);
     // Инициализация WebRTC
     await initializeConnection(user.userId, serverUrl);
+
+    currentUser = await userRepository.getCurrentUser();
 
     return user;
   }
 
   Future<void> sendMessage(String senderId, String recipientId, Message message) async {
+    if (currentUser == null)
+    {
+        throw Exception('Current User is null');
+    }
     print('Sending message from $senderId to $recipientId: ${message.toJson()}');
+    Message updatedMessage = message;
+
     if (message.type == MessageType.file && message.attachments != null) {
-      final fileUrls = await fileStorage.uploadFiles(message.attachments!);
-      message = Message(
+      final updatedAttachments = <FileAttachment>[];
+      for (final attachment in message.attachments!) {
+        final localPath = await _saveFileLocally(attachment);
+        updatedAttachments.add(
+          FileAttachment(
+            fileId: attachment.fileId,
+            fileName: attachment.fileName,
+            fileType: attachment.fileType,
+            content: localPath,
+            size: attachment.size,
+          ),
+        );
+      }
+      updatedMessage = Message(
         messageId: message.messageId,
         senderId: message.senderId,
         recipientId: message.recipientId,
+        senderIdentifier: currentUser!.identifier,
+        senderUsername: currentUser!.username,
+        groupId: message.groupId,
         type: message.type,
         textContent: message.textContent,
-        attachments: message.attachments!.asMap().entries.map((e) {
-          final a = e.value;
-          return FileAttachment(
-            fileId: a.fileId,
-            fileName: a.fileName,
-            fileType: a.fileType,
-            content: fileUrls[e.key],
-            size: a.size,
-          );
-        }).toList(),
+        attachments: updatedAttachments,
         timestamp: message.timestamp,
         status: message.status,
       );
     }
-    await messageRepository.saveMessage(message);
+
+    await messageRepository.saveMessage(updatedMessage);
     try {
       final recipient = await userRepository.getUserById(recipientId, senderId);
       if (recipient == null) {
@@ -112,13 +128,13 @@ class MessengerAPI {
       if (recipient.status == 'offline') {
         throw Exception('Recipient is offline');
       }
-      await webRTCService.sendMessage(message);
-      await messageRepository.saveMessage(message.copyWith(status: MessageStatus.delivered));
-      print('Message marked as delivered: ${message.messageId}');
+      await webRTCService.sendMessage(updatedMessage);
+      await messageRepository.saveMessage(updatedMessage.copyWith(status: MessageStatus.delivered));
+      print('Message marked as delivered: ${updatedMessage.messageId}');
     } catch (e, stackTrace) {
       print('Failed to send message to $recipientId: $e\nStackTrace: $stackTrace');
       Future.delayed(Duration(seconds: 5), () {
-        print('Scheduling sync for message ${message.messageId} to $recipientId');
+        print('Scheduling sync for message ${updatedMessage.messageId} to $recipientId');
         syncWithUser(senderId, recipientId);
       });
       throw Exception('Recipient offline or connection failed: $e');
@@ -130,10 +146,14 @@ class MessengerAPI {
   }
 
   Future<void> deleteMessage(String messageId) async {
-    final message = (await messageRepository.getMessagesForUser('', '')).firstWhere((m) => m.messageId == messageId);
+    final message = (await messageRepository.getMessagesByIds([messageId])).first;
     if (message.type == MessageType.file && message.attachments != null) {
       for (var attachment in message.attachments!) {
-        await fileStorage.deleteFile(attachment.content);
+        final file = File(attachment.content as String);
+        if (await file.exists()) {
+          await file.delete();
+          print('Deleted file: ${attachment.content}');
+        }
       }
     }
     await messageRepository.deleteMessage(messageId);
@@ -175,6 +195,30 @@ class MessengerAPI {
       print('Sync error: $e\nStackTrace: $stackTrace');
     }
   }
+
+  Future<String> _saveFileLocally(FileAttachment attachment) async {
+    final documentsDir = await getApplicationDocumentsDirectory();
+    final fileName = attachment.fileName;
+    final filePath = '${documentsDir.path}/$fileName';
+    final file = File(filePath);
+
+    if (attachment.content is List<int>) {
+      await file.writeAsBytes(attachment.content as List<int>);
+    } else if (attachment.content is String) {
+      // Если content - это путь или URL, копируем файл
+      final sourceFile = File(attachment.content as String);
+      if (await sourceFile.exists()) {
+        await sourceFile.copy(filePath);
+      } else {
+        throw Exception('Source file does not exist: ${attachment.content}');
+      }
+    } else {
+      throw Exception('Unsupported content type for attachment: ${attachment.content.runtimeType}');
+    }
+
+    print('Saved file locally: $filePath');
+    return filePath;
+  }
 }
 
 extension on Message {
@@ -182,6 +226,9 @@ extension on Message {
         messageId: messageId,
         senderId: senderId,
         recipientId: recipientId,
+        senderUsername: senderUsername,
+        senderIdentifier: senderIdentifier,
+        groupId: groupId,
         type: type,
         textContent: textContent,
         attachments: attachments,

@@ -9,6 +9,10 @@ class UserRepository implements IUserRepository {
   final IEncryptionService _encryptionService;
   final _storage = FlutterSecureStorage();
 
+  // Ключи для хранения данных
+  static const _currentUserIdKey = 'user_id';
+  static const _currentUserDataKey = 'current_user_data';
+
   UserRepository(this._baseUrl, this._encryptionService);
 
   Future<String?> _getToken(String userId) async {
@@ -17,8 +21,54 @@ class UserRepository implements IUserRepository {
     return token;
   }
 
+  // Метод для сохранения текущего пользователя
+  Future<void> _saveCurrentUser(User user, String token) async {
+    await Future.wait([
+      _storage.write(key: _currentUserIdKey, value: user.userId),
+      _storage.write(key: 'jwt_token_${user.userId}', value: token),
+      _storage.write(key: _currentUserDataKey, value: jsonEncode(user.toJson())),
+    ]);
+    print('Current user saved: ${user.userId}');
+  }
+
+  // Метод для получения текущего пользователя из хранилища
   @override
-  Future<User> createUser(String username, String email, String password, String publicKey, String identifier) async {
+  Future<User?> getCurrentUser() async {
+    try {
+      // 1. Проверяем, есть ли сохраненные данные пользователя
+      final userJson = await _storage.read(key: _currentUserDataKey);
+      if (userJson != null) {
+        return User.fromJson(jsonDecode(userJson));
+      }
+
+      // 2. Если данных нет, пробуем получить по ID
+      final userId = await _storage.read(key: _currentUserIdKey);
+      if (userId != null) {
+        final token = await _getToken(userId);
+        if (token != null) {
+          // Получаем свежие данные с сервера
+          final user = await getUserById(userId, userId);
+          if (user != null) {
+            // Обновляем локальные данные
+            await _storage.write(
+              key: _currentUserDataKey,
+              value: jsonEncode(user.toJson()),
+            );
+            return user;
+          }
+        }
+      }
+
+      return null;
+    } catch (e, stackTrace) {
+      print('Error getting current user: $e\n$stackTrace');
+      return null;
+    }
+  }
+
+  @override
+  Future<User> createUser(String username, String email, String password,
+      String publicKey, String identifier) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/register'),
@@ -31,16 +81,16 @@ class UserRepository implements IUserRepository {
           'identifier': identifier,
         }),
       );
-      print('Register response: ${response.statusCode} ${response.body}');
+
       if (response.statusCode == 200) {
         final userData = jsonDecode(response.body);
         final token = userData['token'];
         if (token == null) {
           throw Exception('No token received from server');
         }
+
         final user = User.fromJson(userData);
-        await _storage.write(key: 'jwt_token_${user.userId}', value: token);
-        print('Saved token for user ${user.userId}: $token');
+        await _saveCurrentUser(user, token); // Сохраняем пользователя
         return user;
       }
       throw Exception('Failed to register user: ${response.body}');
@@ -92,7 +142,10 @@ class UserRepository implements IUserRepository {
         headers: headers,
         body: jsonEncode(user.toJson()),
       );
+
       print('Update user response: ${response.statusCode} ${response.body}');
+      logout();
+      _saveCurrentUser(user, token);
       if (response.statusCode != 200) {
         throw Exception('Failed to update user: ${response.body}');
       }
@@ -124,6 +177,18 @@ class UserRepository implements IUserRepository {
       print('Delete user error: $e\nStackTrace: $stackTrace');
       rethrow;
     }
+  }
+
+    // Метод выхода (очистка данных)
+  @override
+  Future<void> logout() async {
+    final userId = await _storage.read(key: _currentUserIdKey);
+    await Future.wait([
+      _storage.delete(key: _currentUserIdKey),
+      _storage.delete(key: _currentUserDataKey),
+      if (userId != null) _storage.delete(key: 'jwt_token_$userId'),
+    ]);
+    print('User logged out');
   }
 
   @override

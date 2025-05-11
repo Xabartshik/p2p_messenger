@@ -9,6 +9,8 @@ abstract class IUserRepository {
   Future<void> updateUser(User user);
   Future<void> deleteUser(String userId);
   Future<User?> getUserByIdentifier(String identifier, String currentUserId);
+  Future<User?> getCurrentUser();
+  Future<void> logout();
 }
 
 
@@ -19,7 +21,7 @@ abstract class IMessageRepository {
   Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String recipientId);
   Future<List<Message>> getMessagesByIds(List<String> messageIds);
 }
-
+//Предположительно, не будет использоваться
 abstract class IFileStorage {
   Future<String> uploadFile(String fileName, List<int> bytes);
   Future<List<int>> downloadFile(String fileUrl);

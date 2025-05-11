@@ -3,7 +3,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:p2p_messenger/api/api.dart';
 import 'package:p2p_messenger/api/classes/auth_service.dart';
 import 'package:p2p_messenger/api/classes/encryption_service.dart';
-import 'package:p2p_messenger/api/classes/file_storage.dart';
 import 'package:p2p_messenger/api/classes/message_repository.dart';
 import 'package:p2p_messenger/api/classes/user_repository.dart';
 import 'package:p2p_messenger/api/classes/web_rtc_service.dart';
@@ -23,6 +22,8 @@ void main() {
 }
 
 class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -34,6 +35,8 @@ class MyApp extends StatelessWidget {
 }
 
 class MessengerPage extends StatefulWidget {
+  const MessengerPage({super.key});
+
   @override
   _MessengerPageState createState() => _MessengerPageState();
 }
@@ -43,11 +46,13 @@ class _MessengerPageState extends State<MessengerPage> {
     serverUrl: url_server,
     userRepository: UserRepository(url_server, EncryptionService()),
     messageRepository: MessageRepository(),
-    fileStorage: FileStorage(),
-    webRTCService: WebRTCService(UserRepository(url_server, EncryptionService()), MessageRepository(), EncryptionService()),
+    webRTCService: WebRTCService(
+        UserRepository(url_server, EncryptionService()),
+        MessageRepository(),
+        EncryptionService()),
     authService: AuthService(url_server),
   );
-  final List<String> _messages = [];
+  final List<Message> _messages = [];
   final _scrollController = ScrollController();
   bool _isConnecting = false;
   final _textController = TextEditingController();
@@ -59,8 +64,10 @@ class _MessengerPageState extends State<MessengerPage> {
   String? _currentIdentifier;
   String? _recipientId;
   String? _recipientName;
+  File? _viewingFile;
 
-  void _addMessage(String message, {VoidCallback? onSelectRecipient, String? foundUserId}) {
+  void _addMessage(Message message,
+      {VoidCallback? onSelectRecipient, String? foundUserId}) {
     setState(() {
       _messages.add(message);
     });
@@ -75,7 +82,17 @@ class _MessengerPageState extends State<MessengerPage> {
     });
     if (onSelectRecipient != null && foundUserId != null) {
       setState(() {
-        _messages.add('Select as Recipient?');
+        _messages.add(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent: 'Select as Recipient?',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollController.animateTo(
@@ -91,7 +108,18 @@ class _MessengerPageState extends State<MessengerPage> {
     setState(() => _isConnecting = true);
     try {
       if (!_identifierController.text.matches(r'^[a-z0-9_]+$')) {
-        _addMessage('Invalid identifier: use only lowercase letters, numbers, and underscores');
+        _addMessage(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent:
+              'Invalid identifier: use only lowercase letters, numbers, and underscores',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
         return;
       }
       final user = await _messengerApi.registerUser(
@@ -104,23 +132,50 @@ class _MessengerPageState extends State<MessengerPage> {
         _currentIdentifier = user.identifier;
         _userId = user.userId;
       });
-      _addMessage('Registered as ${user.username}, Identifier: ${user.identifier}, User ID: ${user.userId}');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent:
+            'Registered as ${user.username}, Identifier: ${user.identifier}, User ID: ${user.userId}',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
 
       // Подписка на сообщения
       _messengerApi.listenForMessages(user.userId).listen((msg) {
         print('Received message in UI for user $_userId: ${msg.toJson()}');
-        if (msg.type == MessageType.text) {
-          _addMessage('Received text: ${msg.textContent} from ${msg.senderId}');
-        } else if (msg.type == MessageType.file) {
-          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')} from ${msg.senderId}');
-        }
+        _addMessage(msg);
       }, onError: (e, stackTrace) {
         print('Error in listenForMessages: $e\nStackTrace: $stackTrace');
-        _addMessage('Error receiving message: $e');
+        _addMessage(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent: 'Error receiving message: $e',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
       });
     } catch (e, stackTrace) {
       print('Registration error: $e\nStackTrace: $stackTrace');
-      _addMessage('Registration error: $e');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Registration error: $e',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
     } finally {
       setState(() => _isConnecting = false);
     }
@@ -130,28 +185,56 @@ class _MessengerPageState extends State<MessengerPage> {
     if (_isConnecting) return;
     setState(() => _isConnecting = true);
     try {
-      final user = await _messengerApi.loginUser(_emailController.text, _passwordController.text);
+      final user = await _messengerApi.loginUser(
+          _emailController.text, _passwordController.text);
       setState(() {
         _userId = user.userId;
         _currentIdentifier = user.identifier;
       });
-      _addMessage('Logged in as ${user.username}, User ID: ${user.userId}, Identifier: ${user.identifier}');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent:
+            'Logged in as ${user.username}, User ID: ${user.userId}, Identifier: ${user.identifier}',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
 
       // Подписка на сообщения
       _messengerApi.listenForMessages(user.userId).listen((msg) {
         print('Received message in UI for user $_userId: ${msg.toJson()}');
-        if (msg.type == MessageType.text) {
-          _addMessage('Received text: ${msg.textContent} from ${msg.senderId}');
-        } else if (msg.type == MessageType.file) {
-          _addMessage('Received files: ${msg.attachments!.map((a) => a.fileName).join(', ')} from ${msg.senderId}');
-        }
+        _addMessage(msg);
       }, onError: (e, stackTrace) {
         print('Error in listenForMessages: $e\nStackTrace: $stackTrace');
-        _addMessage('Error receiving message: $e');
+        _addMessage(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent: 'Error receiving message: $e',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
       });
     } catch (e, stackTrace) {
       print('Login error details: $e\nStackTrace: $stackTrace');
-      _addMessage('Error: $e');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error: $e',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
     } finally {
       setState(() => _isConnecting = false);
     }
@@ -180,7 +263,8 @@ class _MessengerPageState extends State<MessengerPage> {
     );
     if (newId != null && newId.isNotEmpty) {
       try {
-        final user = await _messengerApi.userRepository.getUserById(_userId!, _userId!);
+        final user =
+            await _messengerApi.userRepository.getUserById(_userId!, _userId!);
         if (user != null) {
           await _messengerApi.userRepository.updateUser(
             User(
@@ -195,22 +279,62 @@ class _MessengerPageState extends State<MessengerPage> {
           setState(() {
             _userId = newId;
           });
-          _addMessage('User ID updated to $newId');
+          _addMessage(Message(
+            messageId: Uuid().v4(),
+            senderId: '',
+            recipientId: '',
+            senderIdentifier: '',
+            senderUsername: '',
+            type: MessageType.text,
+            textContent: 'User ID updated to $newId',
+            timestamp: DateTime.now(),
+            status: MessageStatus.sent,
+          ));
         }
       } catch (e, stackTrace) {
         print('Update user ID error: $e\nStackTrace: $stackTrace');
-        _addMessage('Error updating User ID: $e');
+        _addMessage(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent: 'Error updating User ID: $e',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
       }
     }
   }
 
   Future<void> _sendMessage() async {
     if (_recipientId == null) {
-      _addMessage('Error: Please select a recipient');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error: Please select a recipient',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
       return;
     }
     if (_userId == null) {
-      _addMessage('Error: Please login first');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error: Please login first',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
       return;
     }
     try {
@@ -219,34 +343,89 @@ class _MessengerPageState extends State<MessengerPage> {
           messageId: Uuid().v4(),
           senderId: _userId!,
           recipientId: _recipientId!,
+          senderIdentifier: _messengerApi.currentUser!.identifier,
+          senderUsername: _messengerApi.currentUser!.username,
           type: MessageType.text,
           textContent: _textController.text,
           timestamp: DateTime.now(),
           status: MessageStatus.sent,
         );
-        print('Sending message from $_userId to $_recipientId: ${message.textContent}');
+        print(
+            'Sending message from $_userId to $_recipientId: ${message.textContent}');
         await _messengerApi.sendMessage(_userId!, _recipientId!, message);
-        _addMessage('Sent text: ${_textController.text} to $_recipientName (ID: $_recipientId)');
+        _addMessage(message);
         _textController.clear();
       }
     } catch (e, stackTrace) {
       print('Send message error: $e\nStackTrace: $stackTrace');
-      _addMessage('Error sending message: $e');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error sending message: $e',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
       if (e.toString().contains('Recipient is offline')) {
-        _addMessage('Recipient is offline, message saved locally');
-      } else if (e.toString().contains('Failed to establish WebRTC connection')) {
-        _addMessage('Failed to connect to recipient, please try again');
+        _addMessage(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent: 'Recipient is offline, message saved locally',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
+      } else if (e
+          .toString()
+          .contains('Failed to establish WebRTC connection')) {
+        _addMessage(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent: 'Failed to connect to recipient, please try again',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
       }
     }
   }
 
   Future<void> _attachFiles() async {
     if (_recipientId == null) {
-      _addMessage('Error: Please select a recipient');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error: Please select a recipient',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
       return;
     }
     if (_userId == null) {
-      _addMessage('Error: Please login first');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error: Please login first',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
       return;
     }
     try {
@@ -267,37 +446,176 @@ class _MessengerPageState extends State<MessengerPage> {
           messageId: Uuid().v4(),
           senderId: _userId!,
           recipientId: _recipientId!,
+          senderIdentifier: _messengerApi.currentUser!.identifier,
+          senderUsername: _messengerApi.currentUser!.username,
           type: MessageType.file,
           attachments: attachments,
           timestamp: DateTime.now(),
           status: MessageStatus.sent,
         );
-        print('Sending files from $_userId to $_recipientId: ${attachments.map((a) => a.fileName).join(', ')}');
+        print(
+            'Sending files from $_userId to $_recipientId: ${attachments.map((a) => a.fileName).join(', ')}');
         await _messengerApi.sendMessage(_userId!, _recipientId!, message);
-        _addMessage('Sent files: ${attachments.map((a) => a.fileName).join(', ')} to $_recipientName (ID: $_recipientId)');
+        _addMessage(message);
       }
     } catch (e, stackTrace) {
       print('Attach files error: $e\nStackTrace: $stackTrace');
-      _addMessage('Error sending files: $e');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error sending files: $e',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
       if (e.toString().contains('Recipient is offline')) {
-        _addMessage('Recipient is offline, files saved locally');
-      } else if (e.toString().contains('Failed to establish WebRTC connection')) {
-        _addMessage('Failed to connect to recipient, please try again');
+        _addMessage(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent: 'Recipient is offline, files saved locally',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
+      } else if (e
+          .toString()
+          .contains('Failed to establish WebRTC connection')) {
+        _addMessage(Message(
+          messageId: Uuid().v4(),
+          senderId: '',
+          recipientId: '',
+          senderIdentifier: '',
+          senderUsername: '',
+          type: MessageType.text,
+          textContent: 'Failed to connect to recipient, please try again',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ));
       }
     }
   }
 
   Future<void> _retryConnection() async {
     if (_userId == null || _recipientId == null) {
-      _addMessage('Error: Please login and select a recipient');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error: Please login and select a recipient',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
       return;
     }
     try {
       await _messengerApi.syncWithUser(_userId!, _recipientId!);
-      _addMessage('Retried connection to $_recipientName');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Retried connection to $_recipientName',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
     } catch (e, stackTrace) {
       print('Retry connection error: $e\nStackTrace: $stackTrace');
-      _addMessage('Error retrying connection: $e');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error retrying connection: $e',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
+    }
+  }
+
+  Future<void> _clearMessages() async {
+    setState(() {
+      _messages.clear();
+    });
+    _addMessage(Message(
+      messageId: Uuid().v4(),
+      senderId: '',
+      recipientId: '',
+      senderIdentifier: '',
+      senderUsername: '',
+      type: MessageType.text,
+      textContent: 'Messages cleared',
+      timestamp: DateTime.now(),
+      status: MessageStatus.sent,
+    ));
+  }
+
+  Future<void> _loadMessages() async {
+    if (_userId == null || _recipientId == null) {
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error: Please login and select a recipient',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
+      return;
+    }
+    try {
+      final messages =
+          await _messengerApi.getChatHistory(_userId!, _recipientId!);
+      setState(() {
+        _messages.addAll(messages);
+      });
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Loaded ${messages.length} messages',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    } catch (e, stackTrace) {
+      print('Load messages error: $e\nStackTrace: $stackTrace');
+      _addMessage(Message(
+        messageId: Uuid().v4(),
+        senderId: '',
+        recipientId: '',
+        senderIdentifier: '',
+        senderUsername: '',
+        type: MessageType.text,
+        textContent: 'Error loading messages: $e',
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      ));
     }
   }
 
@@ -317,8 +635,10 @@ class _MessengerPageState extends State<MessengerPage> {
                 onPressed: _isConnecting ? null : _updateUserId,
                 child: Text('Change User ID'),
               ),
-              Text('Current Identifier: ${_currentIdentifier ?? "Not logged in"}'),
-              Text('Current Recipient: ${_recipientName ?? "None selected"} (ID: ${_recipientId ?? "None"})'),
+              Text(
+                  'Current Identifier: ${_currentIdentifier ?? "Not logged in"}'),
+              Text(
+                  'Current Recipient: ${_recipientName ?? "None selected"} (ID: ${_recipientId ?? "None"})'),
               TextField(
                 controller: TextEditingController(),
                 decoration: InputDecoration(
@@ -329,31 +649,95 @@ class _MessengerPageState extends State<MessengerPage> {
                   if (value.matches(r'^[a-z0-9_]+$')) {
                     try {
                       if (_userId == null) {
-                        _addMessage('Error: Please login first');
+                        _addMessage(Message(
+                          messageId: Uuid().v4(),
+                          senderId: '',
+                          recipientId: '',
+                          senderIdentifier: '',
+                          senderUsername: '',
+                          type: MessageType.text,
+                          textContent: 'Error: Please login first',
+                          timestamp: DateTime.now(),
+                          status: MessageStatus.sent,
+                        ));
                         return;
                       }
-                      final user = await _messengerApi.userRepository.getUserByIdentifier(value, _userId!);
+                      final user = await _messengerApi.userRepository
+                          .getUserByIdentifier(value, _userId!);
                       if (user != null) {
                         _addMessage(
-                          'Found user: ${user.username} (${user.identifier}, ID: ${user.userId})',
+                          Message(
+                            messageId: Uuid().v4(),
+                            senderId: '',
+                            recipientId: '',
+                            senderUsername: '',
+                            senderIdentifier: '',
+                            type: MessageType.text,
+                            textContent:
+                                'Found user: ${user.username} (${user.identifier}, ID: ${user.userId})',
+                            timestamp: DateTime.now(),
+                            status: MessageStatus.sent,
+                          ),
                           onSelectRecipient: () {
                             setState(() {
                               _recipientId = user.userId;
                               _recipientName = user.username;
                             });
-                            _addMessage('Selected recipient: ${user.username} (ID: ${user.userId})');
+                            _addMessage(Message(
+                              messageId: Uuid().v4(),
+                              senderId: '',
+                              recipientId: '',
+                              senderIdentifier: '',
+                              senderUsername: '',
+                              type: MessageType.text,
+                              textContent:
+                                  'Selected recipient: ${user.username} (ID: ${user.userId})',
+                              timestamp: DateTime.now(),
+                              status: MessageStatus.sent,
+                            ));
                           },
                           foundUserId: user.userId,
                         );
                       } else {
-                        _addMessage('User with identifier $value not found');
+                        _addMessage(Message(
+                          messageId: Uuid().v4(),
+                          senderId: '',
+                          recipientId: '',
+                          senderIdentifier: '',
+                          senderUsername: '',
+                          type: MessageType.text,
+                          textContent: 'User with identifier $value not found',
+                          timestamp: DateTime.now(),
+                          status: MessageStatus.sent,
+                        ));
                       }
                     } catch (e, stackTrace) {
                       print('Search user error: $e\nStackTrace: $stackTrace');
-                      _addMessage('Error searching user: $e');
+                      _addMessage(Message(
+                        messageId: Uuid().v4(),
+                        senderId: '',
+                        recipientId: '',
+                        senderIdentifier: '',
+                        senderUsername: '',
+                        type: MessageType.text,
+                        textContent: 'Error searching user: $e',
+                        timestamp: DateTime.now(),
+                        status: MessageStatus.sent,
+                      ));
                     }
                   } else {
-                    _addMessage('Invalid identifier: use only lowercase letters, numbers, and underscores');
+                    _addMessage(Message(
+                      messageId: Uuid().v4(),
+                      senderId: '',
+                      recipientId: '',
+                      senderIdentifier: '',
+                      senderUsername: '',
+                      type: MessageType.text,
+                      textContent:
+                          'Invalid identifier: use only lowercase letters, numbers, and underscores',
+                      timestamp: DateTime.now(),
+                      status: MessageStatus.sent,
+                    ));
                   }
                 },
               ),
@@ -382,11 +766,21 @@ class _MessengerPageState extends State<MessengerPage> {
               ),
               ElevatedButton(
                 onPressed: _isConnecting ? null : _startMessenger,
-                child: Text(_isConnecting ? 'Connecting...' : 'Login & Start Messenger'),
+                child: Text(_isConnecting
+                    ? 'Connecting...'
+                    : 'Login & Start Messenger'),
               ),
               ElevatedButton(
                 onPressed: _isConnecting ? null : _retryConnection,
                 child: Text('Retry Connection'),
+              ),
+              ElevatedButton(
+                onPressed: _isConnecting ? null : _loadMessages,
+                child: Text('Load Messages'),
+              ),
+              ElevatedButton(
+                onPressed: _isConnecting ? null : _clearMessages,
+                child: Text('Clear Messages'),
               ),
               SizedBox(height: 16),
               Container(
@@ -400,32 +794,107 @@ class _MessengerPageState extends State<MessengerPage> {
                   padding: EdgeInsets.all(8),
                   itemCount: _messages.length,
                   itemBuilder: (context, index) {
-                    if (_messages[index].startsWith('Select as Recipient?') && index > 0) {
+                    final message = _messages[index];
+                    if (message.textContent == 'Select as Recipient?' &&
+                        index > 0) {
                       return Padding(
                         padding: EdgeInsets.symmetric(vertical: 4),
                         child: ElevatedButton(
                           onPressed: () {
                             final prevMessage = _messages[index - 1];
-                            final userIdMatch = RegExp(r'ID: ([^\)]+)').firstMatch(prevMessage);
+                            final userIdMatch = RegExp(r'ID: ([^\)]+)')
+                                .firstMatch(prevMessage.textContent ?? '');
                             if (userIdMatch != null) {
                               setState(() {
                                 _recipientId = userIdMatch.group(1);
-                                _recipientName = prevMessage.split('Found user: ')[1].split(' (')[0];
+                                _recipientName = prevMessage.textContent!
+                                    .split('Found user: ')[1]
+                                    .split(' (')[0];
                               });
-                              _addMessage('Selected recipient ID: $_recipientId');
+                              _addMessage(Message(
+                                messageId: Uuid().v4(),
+                                senderId: '',
+                                recipientId: '',
+                                senderIdentifier: '',
+                                senderUsername: '',
+                                type: MessageType.text,
+                                textContent:
+                                    'Selected recipient ID: $_recipientId',
+                                timestamp: DateTime.now(),
+                                status: MessageStatus.sent,
+                              ));
                             }
                           },
                           child: Text('Select as Recipient'),
                         ),
                       );
                     }
-                    return Padding(
-                      padding: EdgeInsets.symmetric(vertical: 4),
-                      child: Text(_messages[index], style: TextStyle(fontSize: 14)),
-                    );
+                    if (message.type == MessageType.text) {
+                      return Padding(
+                        padding: EdgeInsets.symmetric(vertical: 4),
+                        child: Text(
+                          message.textContent ?? '',
+                          style: TextStyle(fontSize: 14),
+                        ),
+                      );
+                    } else if (message.type == MessageType.file &&
+                        message.attachments != null) {
+                      return Padding(
+                        padding: EdgeInsets.symmetric(vertical: 4),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: message.attachments!.map((attachment) {
+                            final file = File(attachment.content as String);
+                            final isImage =
+                                attachment.fileType.startsWith('image');
+                            return Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'File: ${attachment.fileName} (${attachment.fileType})',
+                                    style: TextStyle(fontSize: 14),
+                                  ),
+                                ),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    setState(() {
+                                      _viewingFile =
+                                          file.existsSync() ? file : null;
+                                    });
+                                  },
+                                  child: Text(
+                                      isImage ? 'View Image' : 'Download File'),
+                                ),
+                              ],
+                            );
+                          }).toList(),
+                        ),
+                      );
+                    }
+                    return SizedBox.shrink();
                   },
                 ),
               ),
+              if (_viewingFile != null && _viewingFile!.existsSync()) ...[
+                SizedBox(height: 16),
+                SizedBox(
+                  height: 200,
+                  child: Image.file(
+                    _viewingFile!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) =>
+                        Text('Error loading image: $error'),
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      _viewingFile = null;
+                    });
+                  },
+                  child: Text('Close Image'),
+                ),
+              ],
               SizedBox(height: 16),
               Row(
                 children: [
