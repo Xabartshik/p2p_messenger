@@ -456,7 +456,6 @@ class _MessengerPageState extends State<MessengerPage> {
         print(
             'Sending files from $_userId to $_recipientId: ${attachments.map((a) => a.fileName).join(', ')}');
         await _messengerApi.sendMessage(_userId!, _recipientId!, message);
-        _addMessage(message);
       }
     } catch (e, stackTrace) {
       print('Attach files error: $e\nStackTrace: $stackTrace');

@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:external_path/external_path.dart';
 import 'package:p2p_messenger/api/models/message.dart';
 import 'package:p2p_messenger/api/classes/interfaces.dart';
 import 'package:path_provider/path_provider.dart';
@@ -18,7 +21,7 @@ class MessageRepository implements IMessageRepository {
   Future<Database> _initDatabase() async {
     final directory = await getApplicationDocumentsDirectory();
     final path = join(directory.path, _dbName);
-    
+
     return openDatabase(
       path,
       version: _dbVersion,
@@ -93,7 +96,7 @@ class MessageRepository implements IMessageRepository {
   @override
   Future<Message> saveMessage(Message message) async {
     final db = await database;
-    
+
     await db.insert(
       'messages',
       message.toJson()..remove('attachments'),
@@ -101,7 +104,25 @@ class MessageRepository implements IMessageRepository {
     );
 
     if (message.attachments != null) {
+      // Создаем новый список вложений с обновленными путями
+      final updatedAttachments = <FileAttachment>[];
+
       for (final attachment in message.attachments!) {
+        // Сохраняем файл и получаем путь
+        final filePath = attachment.content is String
+            ? attachment.content as String
+            : await saveFileLocally(attachment);
+
+        // Создаем новое вложение с путем вместо байтов
+        updatedAttachments.add(FileAttachment(
+          fileId: attachment.fileId,
+          fileName: attachment.fileName,
+          fileType: attachment.fileType,
+          content: filePath, // Теперь всегда строка (путь)
+          size: attachment.size,
+        ));
+
+        // Сохраняем в базу данных
         await db.insert(
           'attachments',
           {
@@ -109,24 +130,29 @@ class MessageRepository implements IMessageRepository {
             'message_id': message.messageId,
             'file_name': attachment.fileName,
             'file_type': attachment.fileType,
-            'file_path': attachment.content is String ? attachment.content : '',
+            'file_path': filePath,
             'size': attachment.size,
           },
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
+
+      // Возвращаем сообщение с обновленными вложениями
+      return message.copyWith(attachments: updatedAttachments);
     }
 
     return message;
   }
 
   @override
-  Future<List<Message>> getMessagesForUser(String userId, String recipientId) async {
+  Future<List<Message>> getMessagesForUser(
+      String userId, String recipientId) async {
     final db = await database;
-    
+
     final messages = await db.query(
       'messages',
-      where: '(sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)',
+      where:
+          '(sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)',
       whereArgs: [userId, recipientId, recipientId, userId],
       orderBy: 'timestamp ASC',
     );
@@ -136,7 +162,7 @@ class MessageRepository implements IMessageRepository {
 
   Future<List<Message>> getGroupMessages(String groupId) async {
     final db = await database;
-    
+
     final messages = await db.query(
       'messages',
       where: 'group_id = ?',
@@ -147,7 +173,8 @@ class MessageRepository implements IMessageRepository {
     return await _getMessagesWithAttachments(messages);
   }
 
-  Future<List<Message>> _getMessagesWithAttachments(List<Map<String, dynamic>> messages) async {
+  Future<List<Message>> _getMessagesWithAttachments(
+      List<Map<String, dynamic>> messages) async {
     final db = await database;
     final messageIds = messages.map((m) => m['message_id']).toList();
     if (messageIds.isEmpty) return [];
@@ -164,21 +191,22 @@ class MessageRepository implements IMessageRepository {
     for (final att in attachments) {
       final messageId = att['message_id'] as String;
       attachmentMap.putIfAbsent(messageId, () => []).add(
-        FileAttachment(
-          fileId: att['file_id'] as String,
-          fileName: att['file_name'] as String,
-          fileType: att['file_type'] as String,
-          content: att['file_path'],
-          size: att['size'] as int,
-        ),
-      );
+            FileAttachment(
+              fileId: att['file_id'] as String,
+              fileName: att['file_name'] as String,
+              fileType: att['file_type'] as String,
+              content: att['file_path'],
+              size: att['size'] as int,
+            ),
+          );
     }
 
     // Формируем список сообщений
     return messages.map((msg) {
       return Message.fromJson({
         ...msg,
-        'attachments': attachmentMap[msg['message_id']]?.toList(),
+        'attachments':
+            attachmentMap[msg['message_id']]?.map((a) => a.toJson()).toList(),
       });
     }).toList();
   }
@@ -193,23 +221,25 @@ class MessageRepository implements IMessageRepository {
     );
   }
 
-@override
-Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String recipientId) async {
-  final messages = await getMessagesForUser(userId, recipientId);
-  
-  return messages
-      .where((m) => m.status == MessageStatus.delivered) // Фильтруем по статусу
-      .map((m) => {
-        'message_id': m.messageId,
-        'timestamp': m.timestamp.toIso8601String(),
-      })
-      .toList();
-}
+  @override
+  Future<List<Map<String, dynamic>>> getMessageMetadata(
+      String userId, String recipientId) async {
+    final messages = await getMessagesForUser(userId, recipientId);
+
+    return messages
+        .where(
+            (m) => m.status == MessageStatus.delivered) // Фильтруем по статусу
+        .map((m) => {
+              'message_id': m.messageId,
+              'timestamp': m.timestamp.toIso8601String(),
+            })
+        .toList();
+  }
 
   @override
   Future<List<Message>> getMessagesByIds(List<String> messageIds) async {
     if (messageIds.isEmpty) return [];
-    
+
     final db = await database;
     final messages = await db.query(
       'messages',
@@ -227,7 +257,7 @@ Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String reci
     required List<String> memberIds,
   }) async {
     final db = await database;
-    
+
     await db.insert('groups', {
       'group_id': groupId,
       'group_name': groupName,
@@ -257,7 +287,7 @@ Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String reci
   Future<void> addGroupMembers(String groupId, List<String> memberIds) async {
     final db = await database;
     final batch = db.batch();
-    
+
     for (final memberId in memberIds) {
       batch.insert('group_members', {
         'group_id': groupId,
@@ -265,21 +295,21 @@ Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String reci
         'joined_at': DateTime.now().toIso8601String(),
       });
     }
-    
+
     await batch.commit();
   }
 
   Future<void> syncMessages(List<Message> remoteMessages) async {
     final db = await database;
     final batch = db.batch();
-    
+
     for (final message in remoteMessages) {
       batch.insert(
         'messages',
         message.toJson()..remove('attachments'),
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
-      
+
       if (message.attachments != null) {
         for (final attachment in message.attachments!) {
           batch.insert(
@@ -289,7 +319,8 @@ Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String reci
               'message_id': message.messageId,
               'file_name': attachment.fileName,
               'file_type': attachment.fileType,
-              'file_path': attachment.content is String ? attachment.content : '',
+              'file_path':
+                  attachment.content is String ? attachment.content : '',
               'size': attachment.size,
             },
             conflictAlgorithm: ConflictAlgorithm.replace,
@@ -297,7 +328,7 @@ Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String reci
         }
       }
     }
-    
+
     await batch.commit();
   }
 
@@ -307,4 +338,31 @@ Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String reci
       _database = null;
     }
   }
+
+  Future<String> saveFileLocally(FileAttachment attachment) async {
+    final documentsDir = await getApplicationDocumentsDirectory();
+    final fileName = attachment.fileName;
+    final filePath = '${documentsDir.path}/$fileName';
+    final file = File(filePath);
+
+    if (attachment.content is List<int>) {
+      await file.writeAsBytes(attachment.content as List<int>);
+    } else if (attachment.content is String) {
+      // Если content - это путь или URL, копируем файл
+      final sourceFile = File(attachment.content as String);
+      if (await sourceFile.exists()) {
+        await sourceFile.copy(filePath);
+      } else {
+        throw Exception('Source file does not exist: ${attachment.content}');
+      }
+    } else {
+      throw Exception(
+          'Unsupported content type for attachment: ${attachment.content.runtimeType}');
+    }
+
+    print('Saved file locally: $filePath');
+    return filePath;
+  }
 }
+
+

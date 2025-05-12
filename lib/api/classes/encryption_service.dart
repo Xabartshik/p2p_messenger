@@ -39,34 +39,43 @@ class EncryptionService implements IEncryptionService {
   @override
   Future<Uint8List> encrypt(Uint8List data, String publicKey) async {
     final rsaPublicKey = _decodePublicKey(base64Decode(publicKey));
+    final encryptor = RSAEngine()
+      ..init(true, PublicKeyParameter<RSAPublicKey>(rsaPublicKey));
 
-    // Если данные маленькие, шифруем RSA напрямую
-    if (data.length <= 245) {
-      final encryptor = RSAEngine()
-        ..init(true, PublicKeyParameter<RSAPublicKey>(rsaPublicKey));
+    final keySize = rsaPublicKey.modulus!.bitLength ~/ 8;
+
+    // If data is small enough, encrypt directly with RSA
+    if (data.length <= keySize - 42) {
+      //  padding overhead
       return encryptor.process(data);
-    } 
-    // Иначе используем гибридное шифрование (AES-GCM + RSA)
+    }
+    // Otherwise, use hybrid encryption (AES-GCM + RSA)
     else {
-      // Генерация AES-ключа и IV через FortunaRandom
+      // Generate AES key and IV using FortunaRandom
       final aesKey = Uint8List(32);
       final iv = Uint8List(12);
       final secureRandom = FortunaRandom();
-      secureRandom.seed(KeyParameter(Uint8List.fromList(List.generate(32, (i) => Random.secure().nextInt(256)))));
-      secureRandom.nextBytes(aesKey as int);
-      secureRandom.nextBytes(iv as int);
+      secureRandom.seed(KeyParameter(Uint8List.fromList(
+          List.generate(32, (i) => Random.secure().nextInt(256)))));
+      secureRandom.nextBytes(aesKey.length); // Исправлено
+      for (int i = 0; i < aesKey.length; i++) {
+        aesKey[i] = secureRandom.nextUint8();
+      }
+      secureRandom.nextBytes(iv.length); // Исправлено
+      for (int i = 0; i < iv.length; i++) {
+        iv[i] = secureRandom.nextUint8();
+      }
 
-      // Шифрование данных AES-GCM
+      // Encrypt data using AES-GCM
       final cipher = GCMBlockCipher(AESEngine())
-        ..init(true, AEADParameters(KeyParameter(aesKey), 128, iv, Uint8List(0)));
+        ..init(
+            true, AEADParameters(KeyParameter(aesKey), 128, iv, Uint8List(0)));
       final encryptedData = cipher.process(data);
 
-      // Шифрование AES-ключа RSA
-      final encryptor = RSAEngine()
-        ..init(true, PublicKeyParameter<RSAPublicKey>(rsaPublicKey));
+      // Encrypt AES key with RSA
       final encryptedKey = encryptor.process(aesKey);
 
-      // Объединяем: [зашифрованный ключ (256 байт)][IV (12 байт)][зашифрованные данные]
+      // Combine: [encrypted key][IV][encrypted data]
       return Uint8List.fromList([...encryptedKey, ...iv, ...encryptedData]);
     }
   }
@@ -74,31 +83,33 @@ class EncryptionService implements IEncryptionService {
   @override
   Future<Uint8List> decrypt(Uint8List data, String privateKey) async {
     final rsaPrivateKey = _decodePrivateKey(base64Decode(privateKey));
+    final decryptor = RSAEngine()
+      ..init(false, PrivateKeyParameter<RSAPrivateKey>(rsaPrivateKey));
 
-    // Если данные маленькие, расшифровываем RSA
-    if (data.length <= 256) {
-      final decryptor = RSAEngine()
-        ..init(false, PrivateKeyParameter<RSAPrivateKey>(rsaPrivateKey));
+    final keySize = rsaPrivateKey.modulus!.bitLength ~/ 8;
+
+    // If data is small enough, decrypt directly with RSA
+    if (data.length <= keySize) {
       return decryptor.process(data);
-    } 
-    // Иначе расшифровываем гибридный режим
+    }
+    // Otherwise, decrypt hybrid mode
     else {
-      if (data.length < 256 + 12) {
+      final encryptedKeyLength = keySize;
+      if (data.length < encryptedKeyLength + 12) {
         throw ArgumentError('Invalid encrypted data format');
       }
 
-      final encryptedKey = data.sublist(0, 256);
-      final iv = data.sublist(256, 256 + 12);
-      final encryptedData = data.sublist(256 + 12);
+      final encryptedKey = data.sublist(0, encryptedKeyLength);
+      final iv = data.sublist(encryptedKeyLength, encryptedKeyLength + 12);
+      final encryptedData = data.sublist(encryptedKeyLength + 12);
 
-      // Расшифровка AES-ключа
-      final decryptor = RSAEngine()
-        ..init(false, PrivateKeyParameter<RSAPrivateKey>(rsaPrivateKey));
+      // Decrypt AES key
       final aesKey = decryptor.process(encryptedKey);
 
-      // Расшифровка данных AES-GCM
+      // Decrypt data using AES-GCM
       final cipher = GCMBlockCipher(AESEngine())
-        ..init(false, AEADParameters(KeyParameter(aesKey), 128, iv, Uint8List(0)));
+        ..init(
+            false, AEADParameters(KeyParameter(aesKey), 128, iv, Uint8List(0)));
       return cipher.process(encryptedData);
     }
   }
@@ -113,7 +124,8 @@ class EncryptionService implements IEncryptionService {
   // Кодирование приватного ключа: modulus:privateExponent:p:q
   Uint8List _encodePrivateKey(RSAPrivateKey privateKey) {
     return Uint8List.fromList(
-      utf8.encode('${privateKey.modulus}:${privateKey.privateExponent}:${privateKey.p}:${privateKey.q}'),
+      utf8.encode(
+          '${privateKey.modulus}:${privateKey.privateExponent}:${privateKey.p}:${privateKey.q}'),
     );
   }
 
@@ -127,10 +139,10 @@ class EncryptionService implements IEncryptionService {
     final parts = utf8.decode(encoded).split(':');
     if (parts.length != 4) throw FormatException('Invalid private key format');
     return RSAPrivateKey(
-      BigInt.parse(parts[0]),  // modulus
-      BigInt.parse(parts[1]),  // privateExponent
-      BigInt.parse(parts[2]),  // p
-      BigInt.parse(parts[3]),  // q
+      BigInt.parse(parts[0]), // modulus
+      BigInt.parse(parts[1]), // privateExponent
+      BigInt.parse(parts[2]), // p
+      BigInt.parse(parts[3]), // q
     );
   }
 }

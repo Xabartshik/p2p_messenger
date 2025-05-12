@@ -236,8 +236,8 @@ class WebRTCService implements IWebRTCService {
                 timestamp: DateTime.parse(metadata['timestamp']),
                 status: api_message.MessageStatus.undelivered,
               );
-              await messageRepository.saveMessage(msg);
-              _messageStreamController.add(msg);
+              final savedMessage = await messageRepository.saveMessage(msg);
+              _messageStreamController.add(savedMessage);
               _pendingMetadata = null;
               return;
             }
@@ -282,10 +282,11 @@ class WebRTCService implements IWebRTCService {
               timestamp: DateTime.parse(metadata['timestamp']),
               status: api_message.MessageStatus.delivered,
             );
-            await messageRepository.saveMessage(msg);
-            print('Saved message: ${msg.toJson()}');
-            _messageStreamController.add(msg);
-            print('Streamed message to UI: ${msg.textContent}');
+
+            final savedMessage = await messageRepository.saveMessage(msg);
+            print('Saved message: ${savedMessage.toJson()}');
+            _messageStreamController.add(savedMessage);
+            print('Streamed message to UI: ${savedMessage.textContent}');
             _pendingMetadata = null;
           }
         }

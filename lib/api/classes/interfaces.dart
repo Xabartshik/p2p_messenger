@@ -4,7 +4,8 @@ import 'package:p2p_messenger/api/models/message.dart';
 import 'package:p2p_messenger/api/models/user.dart';
 
 abstract class IUserRepository {
-  Future<User> createUser(String username, String email, String password, String publicKey, String identifier);
+  Future<User> createUser(String username, String email, String password,
+      String publicKey, String identifier);
   Future<User?> getUserById(String userId, String currentUserId);
   Future<void> updateUser(User user);
   Future<void> deleteUser(String userId);
@@ -13,14 +14,17 @@ abstract class IUserRepository {
   Future<void> logout();
 }
 
-
 abstract class IMessageRepository {
+  Future<String> saveFileLocally(FileAttachment attachment);
   Future<Message> saveMessage(Message message);
   Future<List<Message>> getMessagesForUser(String userId, String recipientId);
   Future<void> deleteMessage(String messageId);
-  Future<List<Map<String, dynamic>>> getMessageMetadata(String userId, String recipientId);
+  Future<List<Map<String, dynamic>>> getMessageMetadata(
+      String userId, String recipientId);
   Future<List<Message>> getMessagesByIds(List<String> messageIds);
+
 }
+
 //Предположительно, не будет использоваться
 abstract class IFileStorage {
   Future<String> uploadFile(String fileName, List<int> bytes);
@@ -46,31 +50,31 @@ abstract class IAuthService {
 
 abstract class IEncryptionService {
   /// Генерирует пару RSA-ключей (публичный и приватный) в формате Base64.
-  /// 
+  ///
   /// Возвращает Map с ключами 'publicKey' и 'privateKey'.
   Future<Map<String, String>> generateKeyPair();
 
   /// Шифрует данные с использованием публичного ключа.
-  /// 
+  ///
   /// - Если данные небольшие (<= 245 байт), используется чистое RSA-шифрование.
   /// - Если данные большие, используется гибридное шифрование (AES-GCM для данных,
   ///   RSA для ключа AES).
-  /// 
+  ///
   /// [data] - данные для шифрования в виде байтов.
   /// [publicKey] - публичный ключ в формате Base64.
-  /// 
+  ///
   /// Возвращает зашифрованные данные в виде байтов.
   Future<Uint8List> encrypt(Uint8List data, String publicKey);
 
   /// Расшифровывает данные с использованием приватного ключа.
-  /// 
+  ///
   /// - Если данные небольшие (<= 256 байт), используется чистое RSA-расшифрование.
   /// - Если данные большие, предполагается гибридное шифрование и сначала
   ///   расшифровывается AES-ключ, затем сами данные.
-  /// 
+  ///
   /// [data] - зашифрованные данные в виде байтов.
   /// [privateKey] - приватный ключ в формате Base64.
-  /// 
+  ///
   /// Возвращает расшифрованные данные в виде байтов.
   Future<Uint8List> decrypt(Uint8List data, String privateKey);
 }

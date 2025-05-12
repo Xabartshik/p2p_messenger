@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:p2p_messenger/api/classes/message_repository.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:p2p_messenger/api/classes/interfaces.dart';
 import 'package:p2p_messenger/api/models/message.dart';
@@ -92,7 +93,7 @@ class MessengerAPI {
     if (message.type == MessageType.file && message.attachments != null) {
       final updatedAttachments = <FileAttachment>[];
       for (final attachment in message.attachments!) {
-        final localPath = await _saveFileLocally(attachment);
+        final localPath = await messageRepository.saveFileLocally(attachment);
         updatedAttachments.add(
           FileAttachment(
             fileId: attachment.fileId,
@@ -196,29 +197,7 @@ class MessengerAPI {
     }
   }
 
-  Future<String> _saveFileLocally(FileAttachment attachment) async {
-    final documentsDir = await getApplicationDocumentsDirectory();
-    final fileName = attachment.fileName;
-    final filePath = '${documentsDir.path}/$fileName';
-    final file = File(filePath);
 
-    if (attachment.content is List<int>) {
-      await file.writeAsBytes(attachment.content as List<int>);
-    } else if (attachment.content is String) {
-      // Если content - это путь или URL, копируем файл
-      final sourceFile = File(attachment.content as String);
-      if (await sourceFile.exists()) {
-        await sourceFile.copy(filePath);
-      } else {
-        throw Exception('Source file does not exist: ${attachment.content}');
-      }
-    } else {
-      throw Exception('Unsupported content type for attachment: ${attachment.content.runtimeType}');
-    }
-
-    print('Saved file locally: $filePath');
-    return filePath;
-  }
 }
 
 extension on Message {

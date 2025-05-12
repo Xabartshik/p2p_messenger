@@ -33,6 +33,8 @@ dependencies:
   url_launcher: ^6.1.10
   open_file: ^3.3.2
   sqflite: any
+  external_path: ^2.0.0   # Для внешнего хранилища на Android
+  device_info_plus: ^10.1.0  # Укажите актуальную версию
 dev_dependencies:
   flutter_test:
     sdk: flutter
